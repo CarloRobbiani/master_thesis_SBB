@@ -7,7 +7,7 @@ from google.protobuf.json_format import MessageToDict
 # Load .pb file
 feed = gtfs_realtime_pb2.FeedMessage()
 
-with open("GTFSR_20260217100801.pb", "rb") as f:
+with open("data/GTFSR_20260217100801.pb", "rb") as f:
     feed.ParseFromString(f.read())
 
 print(len(feed.entity))
@@ -41,7 +41,7 @@ df_rt = pd.DataFrame(records)
 df_rt["arrival_delay_min"] = df_rt["arrival_delay"] / 60
 #print(df_rt[df_rt["arrival_delay_min"]  > 0.0])
 
-stop_times = pd.read_csv("stop_times.txt")
+stop_times = pd.read_csv("data/stop_times.txt")
 
 df = df_rt.merge(
     stop_times,
