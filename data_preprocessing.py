@@ -4,8 +4,14 @@ import pandas as pd
 #from graph_models.station_graph.training import StationMATGCNDataset
 from sklearn.preprocessing import LabelEncoder
 
+def convert_to_parquet(filepath: str):
+    print("starting conversion...")
+    df = pd.read_csv(filepath)
+    df.to_parquet("data/train_data.parquet")
+    print("conversion finished!")
+
+
 def preprocess_train(df, target_column="OPERATIONAL_PUNCTUAL"):
-    df = df.copy()
 
     # -----------------------
     # 1. Drop useless columns
@@ -16,6 +22,7 @@ def preprocess_train(df, target_column="OPERATIONAL_PUNCTUAL"):
     # -----------------------
     # 2. Handle timestamps
     # -----------------------
+    print("handling timestamps...")
     time_cols = ["OPERATION_PLANNED_TIMESTAMP", "OPERATION_ACTUAL_TIMESTAMP"]
 
     for col in time_cols:
@@ -37,23 +44,29 @@ def preprocess_train(df, target_column="OPERATIONAL_PUNCTUAL"):
     # -----------------------
     # 3. Boolean → int
     # -----------------------
+    print("converting boolean to int...")
     df["EVENT_SERVED"] = df["EVENT_SERVED"].astype(int)
 
     # -----------------------
     # 4. Categorical encoding
     # -----------------------
+    print("categoircal encoding...")
     cat_cols = df.select_dtypes(include="object").columns
 
-    encoders = {}
+    for col in cat_cols:
+        df[col] = df[col].astype("category").cat.codes
+
+    """ encoders = {}
     for col in cat_cols:
         le = LabelEncoder()
         df[col] = df[col].astype(str)
         df[col] = le.fit_transform(df[col])
-        encoders[col] = le
+        encoders[col] = le """
 
     # -----------------------
     # 5. Handle missing values
     # -----------------------
+    print("handling missing values...")
     df = df.fillna(-1)
 
     # -----------------------
@@ -61,8 +74,9 @@ def preprocess_train(df, target_column="OPERATIONAL_PUNCTUAL"):
     # -----------------------
     X = df.drop(columns=[target_column])
     y = df[target_column]
+    print("finished preprocessing...")
 
-    return X, y, encoders
+    return X, y
 
 
 
@@ -129,3 +143,6 @@ def create_df_tensors(df: pd.DataFrame):
     return station_tensor, external_tensor, target_tensor
 
 
+if __name__ == "__main__":
+
+    convert_to_parquet("data/train_data.csv")
