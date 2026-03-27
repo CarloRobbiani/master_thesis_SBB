@@ -10,8 +10,70 @@ def convert_to_parquet(filepath: str):
     df.to_parquet("data/train_data.parquet")
     print("conversion finished!")
 
+import pyarrow.parquet as pq
+import pyarrow.compute as pc
+import pyarrow
+
+def filter_stations(station_list = "data\station_list.csv", file_path = "data/train_data.parquet"):
+    """
+    Filter the dataframe based on the stations
+    """
+    print("filtering stations...")
+    train_df = pd.read_parquet(file_path)
+
+    station_df = pd.read_csv(station_list, header=None)
+
+    stations = station_df.iloc[1].tolist() # second row is list of station abbreviations
+    train_df = train_df[train_df["OPERATING_POINT_ABBREVIATION"].isin(stations)]
+
+    train_df.to_parquet("data/train_data.parquet")
+
+def filter_parquet_file(filepath: str):
+    """
+    Filter the dataframe based on the date
+    """
+    print("starting filtering...")
+
+    parquet_file = pq.ParquetFile(filepath)
+    writer = None
+    
+    for batch in parquet_file.iter_batches():
+        table = pyarrow.Table.from_batches([batch])
+
+        mask = pc.and_(
+            pc.greater_equal(table['OPERATIONAL_DAY'], '2025-01-01'),
+            pc.less_equal(table['OPERATIONAL_DAY'], '2025-06-01')
+        )
+
+        filtered = table.filter(mask)
+
+        if writer is None:
+            writer = pq.ParquetWriter("data/train_data_small.parquet", filtered.schema)
+
+        writer.write_table(filtered)
+
+    if writer:
+        writer.close()
+
+    print("Done filtering!")
+
+
+def full_pipeline_preparing(csv_filepath):
+    """
+    This function starts from the .csv file and filters it based on stations and dates and saves it as .parquet
+    """
+    convert_to_parquet(csv_filepath)
+
+    filter_stations()
+
+    filter_parquet_file("data/train_data.parquet")
+
+
 
 def preprocess_train(df, target_column="OPERATIONAL_PUNCTUAL"):
+    """
+    Preprocess the dataframe for training
+    """
 
     # -----------------------
     # 1. Drop useless columns
@@ -80,8 +142,6 @@ def preprocess_train(df, target_column="OPERATIONAL_PUNCTUAL"):
 
 
 
-
-
 def create_df_tensors(df: pd.DataFrame):
     # Define feature groups for station MATGCN:
 
@@ -145,4 +205,6 @@ def create_df_tensors(df: pd.DataFrame):
 
 if __name__ == "__main__":
 
-    convert_to_parquet("data/train_data.csv")
+    #filter_parquet_file("data/train_data.parquet")
+    #filter_stations()
+    full_pipeline_preparing("data/train_data.csv")
