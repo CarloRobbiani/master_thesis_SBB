@@ -100,7 +100,6 @@ def compute_laplacian(adj):
 def create_df_tensors(df: pd.DataFrame):
 
     station_feature_cols = [
-        "DAILY_PLAN_OPERATIONAL_DELAY_SEC",
         "EVENT_TYPE",
         "EVENT_SERVED",
         "PLAN_STOP_TYPE", 
@@ -127,7 +126,12 @@ def create_df_tensors(df: pd.DataFrame):
     #  Categorical encoding
     # -----------------------
     print("categoircal encoding...")
-    cat_cols = df.select_dtypes(include="object").columns
+    exclude_cols = ["OPERATING_POINT_ABBREVIATION", "OPERATION_ACTUAL_TIMESTAMP"]
+
+    cat_cols = [
+        col for col in df.select_dtypes(include="object").columns
+        if col not in exclude_cols
+    ]
 
     for col in cat_cols:
         df[col] = df[col].astype("category").cat.codes
@@ -140,7 +144,7 @@ def create_df_tensors(df: pd.DataFrame):
 
     # --- 2. Create consistent indices ---
     timestamps = sorted(df["OPERATION_ACTUAL_TIMESTAMP"].unique())
-    stations = sorted(df["OPERATING_POINT_ABBREVIATION"].unique())
+    stations = ["BI","TUE","TWN","LIG","CHAV","POU","NV","LD","CRNE","CORN","SBLB","NE"]
 
     timestamp_to_idx = {t: i for i, t in enumerate(timestamps)}
     station_to_idx = {s: i for i, s in enumerate(stations)}
@@ -152,9 +156,9 @@ def create_df_tensors(df: pd.DataFrame):
     E = len(external_cols)
 
     # --- 3. Initialize tensors ---
-    station_tensor = np.zeros((T_total, N, F), dtype=np.float32)
-    target_tensor = np.zeros((T_total, N), dtype=np.float32)
-    external_tensor = np.zeros((T_total, E), dtype=np.float32)
+    station_tensor = np.full((T_total, N, F), np.nan, dtype=np.float32)
+    target_tensor = np.full((T_total, N), np.nan, dtype=np.float32)
+    external_tensor = np.full((T_total, E), np.nan, dtype=np.float32)
 
     # --- 4. Fill tensors safely ---
     for _, row in df.iterrows():
@@ -167,18 +171,18 @@ def create_df_tensors(df: pd.DataFrame):
 
         # Target
         target_tensor[t, n] = row[target_col]
+        #target_tensor = np.nan_to_num(target_tensor, nan=0.0)
 
         # External (same for all stations → overwrite is fine)
-        external_tensor[t, :] = row[external_cols].values
+        if np.isnan(external_tensor[t, 0]):
+            external_tensor[t, :] = row[external_cols].values
 
     # --- 5. Handle missing values (VERY IMPORTANT) ---
-    # Option A: keep zeros (simple baseline)
-    # Option B (better): forward fill
 
     # forward fill over time
     for n in range(N):
         for f in range(F):
             series = pd.Series(station_tensor[:, n, f])
-            station_tensor[:, n, f] = series.replace(0, np.nan).ffill().fillna(0)
+            station_tensor[:, n, f] = series.ffill().fillna(0)
 
-    return station_tensor, external_tensor, target_tensor
+    return station_tensor, external_tensor, target_tensor, timestamps

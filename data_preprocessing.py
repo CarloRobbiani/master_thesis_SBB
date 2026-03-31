@@ -13,6 +13,7 @@ def convert_to_parquet(filepath: str):
 import pyarrow.parquet as pq
 import pyarrow.compute as pc
 import pyarrow
+import numpy as np
 
 def filter_stations(station_list = "data\station_list.csv", file_path = "data/train_data.parquet"):
     """
@@ -166,7 +167,7 @@ def create_df_tensors(df: pd.DataFrame):
 
     # Extract dimensions
     timestamps = df["timestamp"].unique()
-    stations = df["station_id"].unique()
+    stations =["BI","TUE","TWN","LIG","CHAV","POU","NV","LD","CRNE","CORN","SBLB","NE"]
 
     T_total = len(timestamps)
     N = len(stations)
@@ -174,23 +175,17 @@ def create_df_tensors(df: pd.DataFrame):
     F = len(station_feature_cols)
     E = len(external_cols)
 
-    station_tensor = (
-        df.pivot_table(
-            index="timestamp",
-            columns="station_id",
-            values=station_feature_cols
-        )
-        .values
-        .reshape(T_total, N, F)
-    )
+    station_tensor = np.stack([
+        df.pivot_table(index="timestamp", columns="station_id", values=station_feature_cols)
+          .reindex(index=timestamps, columns=stations)
+          .values
+        for col in station_feature_cols
+    ], axis=-1)
 
     target_tensor = (
-        df.pivot_table(
-            index="timestamp",
-            columns="station_id",
-            values=target_col
-        )
-        .values
+    df.pivot_table(index="timestamp", columns="station_id", values=target_col)
+    .reindex(index=timestamps, columns=stations)
+    .values
     )
 
     external_df = (

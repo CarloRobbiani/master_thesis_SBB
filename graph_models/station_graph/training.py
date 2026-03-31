@@ -10,9 +10,10 @@ sys.path.append(
 import pandas as pd
 from torch.utils.data import DataLoader
 from adjacency import create_adj_matrix
+from sklearn.metrics import root_mean_squared_error
+import numpy as np
 
 
-#Uses data coming from data_preprocessing.py
 class StationMATGCNDataset(Dataset):
 
     def __init__(self, station_tensor, external_tensor, target_tensor, T, H):
@@ -35,12 +36,18 @@ class StationMATGCNDataset(Dataset):
         e = self.E[idx : idx + self.T]          # [T, E]
         y = self.Y[idx + self.T : idx + self.T + self.H]   # [H, N]
 
-        return x, e, y
+        # Create mask BEFORE any modification
+        mask = ~torch.isnan(y)   # True where valid
+
+        # Replace NaNs with 0 to avoid propagation in loss
+        y = torch.nan_to_num(y, nan=0.0)
+
+        return x, e, y, mask
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-F = 5 # Node feature dimension
+F = 4 # Node feature dimension
 T = 12 # History length
 E = 6 # external feature dimension
 H = 12 # Prediction horizon
@@ -66,28 +73,53 @@ adj = torch.tensor(create_adj_matrix(station_list_path))
 
 
 laplacian = compute_laplacian(adj).float().to(device)
+print("NaNs in laplacian:", torch.isnan(laplacian).sum())
 
-#TODO also change here to have different loaders
 training_data_path = os.path.join("data", "train_data_weather.parquet")
 df = pd.read_parquet(training_data_path)
 df = df.sort_values("OPERATION_PLANNED_TIMESTAMP")
 df = df.reset_index(drop=True)
 
-train_end = "2025-02-28"
-val_end   = "2025-03-31"
+station_tensor, external_tensor, target_tensor, timestamps = create_df_tensors(df)
+print("NaNs in station:", np.isnan(station_tensor).sum())
+print("NaNs in external:", np.isnan(external_tensor).sum())
+print("NaNs in target:", np.isnan(target_tensor).sum())
+timestamps = pd.to_datetime(timestamps, utc=True)      # parse correctly
 
-train_df = df[df["OPERATION_PLANNED_TIMESTAMP"] < train_end]
-val_df   = df[(df["OPERATION_PLANNED_TIMESTAMP"] >= train_end) & (df["OPERATION_PLANNED_TIMESTAMP"] < val_end)]
-test_df  = df[df["OPERATION_PLANNED_TIMESTAMP"] >= val_end]
+#print(timestamps)
 
-# Sanity check
-print(train_df["OPERATION_PLANNED_TIMESTAMP"].min(), train_df["OPERATION_PLANNED_TIMESTAMP"].max())
-print(val_df["OPERATION_PLANNED_TIMESTAMP"].min(), val_df["OPERATION_PLANNED_TIMESTAMP"].max())
-print(test_df["OPERATION_PLANNED_TIMESTAMP"].min(), test_df["OPERATION_PLANNED_TIMESTAMP"].max())
+# Remove timezone if present
+if isinstance(timestamps, pd.DatetimeIndex):
+    if timestamps.tz is not None:
+        timestamps = timestamps.tz_convert(None)
+elif isinstance(timestamps, pd.Series):
+    if timestamps.dt.tz is not None:
+        timestamps = timestamps.dt.tz_convert(None)
+else:
+    # If it's a plain Index, try to convert to DatetimeIndex
+    timestamps = pd.to_datetime(timestamps, utc=True)
+    if hasattr(timestamps, 'tz') and timestamps.tz is not None:
+        timestamps = timestamps.tz_convert(None)
 
-train_station, train_ext, train_target = create_df_tensors(train_df)
-val_station, val_ext, val_target = create_df_tensors(val_df)
-test_station, test_ext, test_target = create_df_tensors(test_df)
+train_end = pd.Timestamp("2025-02-28")
+val_end   = pd.Timestamp("2025-03-31")
+
+
+train_idx = timestamps < train_end
+val_idx   = (timestamps >= train_end) & (timestamps < val_end)
+test_idx  = timestamps >= val_end
+
+train_station = station_tensor[train_idx]
+val_station   = station_tensor[val_idx]
+test_station  = station_tensor[test_idx]
+
+train_ext = external_tensor[train_idx]
+val_ext   = external_tensor[val_idx]
+test_ext  = external_tensor[test_idx]
+
+train_target = target_tensor[train_idx]
+val_target   = target_tensor[val_idx]
+test_target  = target_tensor[test_idx]
 
 train_dataset = StationMATGCNDataset(
     train_station, train_ext, train_target, T, H
@@ -116,24 +148,48 @@ def evaluate(model, dataloader, laplacian, criterion, device):
     total_loss = 0
     total_samples = 0
 
+    all_preds = []
+    all_targets = []
+
     with torch.no_grad():
 
-        for x, e, y in dataloader:
+        for x, e, y, mask in dataloader:
 
             x = x.to(device)
             e = e.to(device)
             y = y.to(device)
+            y = y.permute(0, 2, 1)
+            mask = mask.to(device)
+            mask = mask.permute(0,2,1)
 
             pred = model(x, e, laplacian)
 
-            loss = criterion(pred, y)
+            # Masked MAE
+            #loss = criterion(pred, y)
+            loss = torch.abs(pred - y)
+            loss = loss * mask
+            loss = loss.sum() / mask.sum().clamp(min=1)
 
             batch_size = x.shape[0]
 
             total_loss += loss.item() * batch_size
             total_samples += batch_size
 
-    return total_loss / total_samples
+            # Collect ONLY valid values for RMSE
+            all_preds.append(pred[mask].cpu())
+            all_targets.append(y[mask].cpu())
+
+    # Concatenate all batches
+    all_preds = torch.cat(all_preds).numpy()
+    all_targets = torch.cat(all_targets).numpy()
+
+    # Flatten everything
+    #all_preds = all_preds.reshape(-1).numpy()
+    #all_targets = all_targets.reshape(-1).numpy()
+
+    rmse = root_mean_squared_error(all_targets, all_preds)
+
+    return total_loss / total_samples, rmse
 
 train_losses = []
 val_losses = []
@@ -145,20 +201,29 @@ for epoch in range(epochs):
     running_loss = 0
     total_samples = 0
 
-    for x, e, y in train_loader:
+    for x, e, y, mask in train_loader:
 
         x = x.to(device)
         e = e.to(device)
         y = y.to(device)
         y = y.permute(0, 2, 1)  # [B, N, H]
+        mask = mask.to(device)
+        mask = mask.permute(0, 2, 1)
+        #print("Valid ratio:", mask.float().mean().item())
 
         optimizer.zero_grad()
 
+        
         pred = model(x, e, laplacian)
+        # MASKED MAE
+        #loss = criterion(pred, y)
+        loss = torch.abs(pred - y)
+        loss = loss * mask  # zero-out invalid entries
 
-        loss = criterion(pred, y)
+        loss = loss.sum() / mask.sum().clamp(min=1)
 
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
         optimizer.step()
 
         batch_size = x.shape[0]
@@ -168,7 +233,7 @@ for epoch in range(epochs):
 
     train_loss = running_loss / total_samples
 
-    val_loss = evaluate(
+    val_loss, val_rmse = evaluate(
         model,
         val_loader,
         laplacian,
@@ -196,10 +261,23 @@ for epoch in range(epochs):
     print(
         f"Epoch {epoch+1}/{epochs} | "
         f"Train Loss: {train_loss:.4f} | "
-        f"Val Loss: {val_loss:.4f}"
+        f"Val Loss: {val_loss:.4f} | "
+        f"Val RMSE: {val_rmse:.4f}"
     )
 
 torch.save(model.state_dict(), "matgcn_model.pt")
+
+test_loss, test_rmse = evaluate(
+    model,
+    test_loader,
+    laplacian,
+    criterion,
+    device
+)
+
+print(f"Test Loss: {test_loss:.4f} | Test RMSE: {test_rmse:.4f}")
+
+
 
 # Plot curves:
 
