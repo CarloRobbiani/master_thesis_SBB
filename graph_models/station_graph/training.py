@@ -1,10 +1,15 @@
 import torch
 from stationMATGCN import StationMATGCN
-from utils import compute_laplacian
+from utils import compute_laplacian, create_df_tensors
 from torch.utils.data import Dataset
-from data_preprocessing import create_df_tensors
+import sys
+import os
+import os.path
+sys.path.append(
+    os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir)))
 import pandas as pd
 from torch.utils.data import DataLoader
+from adjacency import create_adj_matrix
 
 
 #Uses data coming from data_preprocessing.py
@@ -35,12 +40,12 @@ class StationMATGCNDataset(Dataset):
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-F = 12 # Node feature dimension
+F = 5 # Node feature dimension
 T = 12 # History length
-E = 12 # external feature dimension
+E = 6 # external feature dimension
 H = 12 # Prediction horizon
 B = 64 # Batch size
-N = 5 # Number of nodes
+N = 12 # Number of nodes
 epochs = 10
 
 model = StationMATGCN(
@@ -55,33 +60,53 @@ model = StationMATGCN(
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 criterion = torch.nn.L1Loss()
 
-laplacian = compute_laplacian(adj).to(device)
+
+station_list_path = os.path.join("data", "station_list.csv")
+adj = torch.tensor(create_adj_matrix(station_list_path))
+
+
+laplacian = compute_laplacian(adj).float().to(device)
 
 #TODO also change here to have different loaders
-df = pd.read_csv("CHANGE TO FILE")
+training_data_path = os.path.join("data", "train_data_weather.parquet")
+df = pd.read_parquet(training_data_path)
+df = df.sort_values("OPERATION_PLANNED_TIMESTAMP")
+df = df.reset_index(drop=True)
 
-station_tensor, external_tensor, target_tensor = create_df_tensors(df)
-dataset = StationMATGCNDataset(
-    station_tensor,
-    external_tensor,
-    target_tensor,
-    T,
-    H
+train_end = "2025-02-28"
+val_end   = "2025-03-31"
+
+train_df = df[df["OPERATION_PLANNED_TIMESTAMP"] < train_end]
+val_df   = df[(df["OPERATION_PLANNED_TIMESTAMP"] >= train_end) & (df["OPERATION_PLANNED_TIMESTAMP"] < val_end)]
+test_df  = df[df["OPERATION_PLANNED_TIMESTAMP"] >= val_end]
+
+# Sanity check
+print(train_df["OPERATION_PLANNED_TIMESTAMP"].min(), train_df["OPERATION_PLANNED_TIMESTAMP"].max())
+print(val_df["OPERATION_PLANNED_TIMESTAMP"].min(), val_df["OPERATION_PLANNED_TIMESTAMP"].max())
+print(test_df["OPERATION_PLANNED_TIMESTAMP"].min(), test_df["OPERATION_PLANNED_TIMESTAMP"].max())
+
+train_station, train_ext, train_target = create_df_tensors(train_df)
+val_station, val_ext, val_target = create_df_tensors(val_df)
+test_station, test_ext, test_target = create_df_tensors(test_df)
+
+train_dataset = StationMATGCNDataset(
+    train_station, train_ext, train_target, T, H
 )
 
-loader = DataLoader(
-    dataset,
-    batch_size=32,
-    shuffle=True, # only for train not for val + test
-    num_workers=4
+val_dataset = StationMATGCNDataset(
+    val_station, val_ext, val_target, T, H
+)
+
+test_dataset = StationMATGCNDataset(
+    test_station, test_ext, test_target, T, H
 )
 
 # Create different dataloaders for this
-""" train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 
 val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
 
-test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False) """
+test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
 
 def evaluate(model, dataloader, laplacian, criterion, device):
@@ -125,6 +150,7 @@ for epoch in range(epochs):
         x = x.to(device)
         e = e.to(device)
         y = y.to(device)
+        y = y.permute(0, 2, 1)  # [B, N, H]
 
         optimizer.zero_grad()
 
@@ -172,6 +198,8 @@ for epoch in range(epochs):
         f"Train Loss: {train_loss:.4f} | "
         f"Val Loss: {val_loss:.4f}"
     )
+
+torch.save(model.state_dict(), "matgcn_model.pt")
 
 # Plot curves:
 

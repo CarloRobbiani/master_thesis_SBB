@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import pandas as pd
+import numpy as np
 
 
 class ChebGraphConv(nn.Module):
@@ -94,3 +96,89 @@ def compute_laplacian(adj):
     L = D - adj
     D_inv_sqrt = torch.diag(1.0 / torch.sqrt(torch.sum(adj, dim=1) + 1e-6))
     return D_inv_sqrt @ L @ D_inv_sqrt
+
+def create_df_tensors(df: pd.DataFrame):
+
+    station_feature_cols = [
+        "DAILY_PLAN_OPERATIONAL_DELAY_SEC",
+        "EVENT_TYPE",
+        "EVENT_SERVED",
+        "PLAN_STOP_TYPE", 
+        "OPERATION_DAY_PERIOD_IDENTIFIER_COARSE"
+    ]
+
+    external_cols = [
+        'tre200s0', 'fkl010z1', 'fu3010z0', 'rre150z0',
+       'htoauts0', 'hto000d0'
+    ]
+
+    target_col = "DAILY_PLAN_OPERATIONAL_DELAY_SEC"
+
+    # --- 1. Sort ---
+    df = df.sort_values(["OPERATION_ACTUAL_TIMESTAMP", "OPERATING_POINT_ABBREVIATION"])
+
+    # -----------------------
+    #  Boolean → int
+    # -----------------------
+    print("converting boolean to int...")
+    df["EVENT_SERVED"] = df["EVENT_SERVED"].astype(int)
+
+    # -----------------------
+    #  Categorical encoding
+    # -----------------------
+    print("categoircal encoding...")
+    cat_cols = df.select_dtypes(include="object").columns
+
+    for col in cat_cols:
+        df[col] = df[col].astype("category").cat.codes
+
+    # -----------------------
+    # 5. Handle missing values
+    # -----------------------
+    print("handling missing values...")
+    df = df.fillna(-1)
+
+    # --- 2. Create consistent indices ---
+    timestamps = sorted(df["OPERATION_ACTUAL_TIMESTAMP"].unique())
+    stations = sorted(df["OPERATING_POINT_ABBREVIATION"].unique())
+
+    timestamp_to_idx = {t: i for i, t in enumerate(timestamps)}
+    station_to_idx = {s: i for i, s in enumerate(stations)}
+
+    T_total = len(timestamps)
+    N = len(stations)
+
+    F = len(station_feature_cols)
+    E = len(external_cols)
+
+    # --- 3. Initialize tensors ---
+    station_tensor = np.zeros((T_total, N, F), dtype=np.float32)
+    target_tensor = np.zeros((T_total, N), dtype=np.float32)
+    external_tensor = np.zeros((T_total, E), dtype=np.float32)
+
+    # --- 4. Fill tensors safely ---
+    for _, row in df.iterrows():
+
+        t = timestamp_to_idx[row["OPERATION_ACTUAL_TIMESTAMP"]]
+        n = station_to_idx[row["OPERATING_POINT_ABBREVIATION"]]
+
+        # Node features
+        station_tensor[t, n, :] = row[station_feature_cols].values
+
+        # Target
+        target_tensor[t, n] = row[target_col]
+
+        # External (same for all stations → overwrite is fine)
+        external_tensor[t, :] = row[external_cols].values
+
+    # --- 5. Handle missing values (VERY IMPORTANT) ---
+    # Option A: keep zeros (simple baseline)
+    # Option B (better): forward fill
+
+    # forward fill over time
+    for n in range(N):
+        for f in range(F):
+            series = pd.Series(station_tensor[:, n, f])
+            station_tensor[:, n, f] = series.replace(0, np.nan).ffill().fillna(0)
+
+    return station_tensor, external_tensor, target_tensor

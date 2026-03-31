@@ -17,3 +17,5 @@ def create_adj_matrix(station_list_path : str = "stations.csv"):
     for i in range(n - 1):
         adj[i, i + 1] = 1
         adj[i + 1, i] = 1
+
+    return adj
