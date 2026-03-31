@@ -40,5 +40,6 @@ class StationMATGCN(nn.Module):
         for block in self.blocks:
             x = block(x, laplacian)
 
-        out = self.output_layer(x[:, -1])
+        #out = self.output_layer(x[:, -1])
+        out = self.output_layer(x.mean(dim=1))
         return out.transpose(1, 2)

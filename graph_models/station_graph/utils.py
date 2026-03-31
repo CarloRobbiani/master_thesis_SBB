@@ -80,6 +80,8 @@ class STBlock(nn.Module):
     def forward(self, x, laplacian):
         # x: [B, T, N, F]
 
+        residual = x
+
         x = self.feature_att(x)
         x = self.temporal_att(x)
 
@@ -89,7 +91,7 @@ class STBlock(nn.Module):
         x = self.temporal_conv(x)
         x = x.permute(0, 2, 3, 1)
 
-        return self.norm(x)
+        return self.norm(x + residual)
     
 def compute_laplacian(adj):
     D = torch.diag(torch.sum(adj, dim=1))
@@ -103,7 +105,13 @@ def create_df_tensors(df: pd.DataFrame):
         "EVENT_TYPE",
         "EVENT_SERVED",
         "PLAN_STOP_TYPE", 
-        "OPERATION_DAY_PERIOD_IDENTIFIER_COARSE"
+        "OPERATION_DAY_PERIOD_IDENTIFIER_COARSE",
+        'OPERATION_TRAFFIC_CATEGORY_ABBREVIATION',
+        'PLAN_FORMATION_MAXIMAL_VELOCITY',
+        "hour_sin",
+        "hour_cos",
+        "dow_sin",
+        "dow_cos"
     ]
 
     external_cols = [
@@ -137,10 +145,10 @@ def create_df_tensors(df: pd.DataFrame):
         df[col] = df[col].astype("category").cat.codes
 
     # -----------------------
-    # 5. Handle missing values
+    # Handle missing values
     # -----------------------
     print("handling missing values...")
-    df = df.fillna(-1)
+    df = df.fillna(0)
 
     # --- 2. Create consistent indices ---
     timestamps = sorted(df["OPERATION_ACTUAL_TIMESTAMP"].unique())
@@ -177,9 +185,15 @@ def create_df_tensors(df: pd.DataFrame):
         if np.isnan(external_tensor[t, 0]):
             external_tensor[t, :] = row[external_cols].values
 
-    # --- 5. Handle missing values (VERY IMPORTANT) ---
+    # --- 5. Handle missing values ---
+
+    target_tensor = np.nan_to_num(target_tensor, nan=0.0)   # Replace NaNs in target NO DELAY = 0
 
     # forward fill over time
+    for f in range(E):
+        series = pd.Series(external_tensor[:, f])
+        external_tensor[:, f] = series.ffill().fillna(0)
+
     for n in range(N):
         for f in range(F):
             series = pd.Series(station_tensor[:, n, f])

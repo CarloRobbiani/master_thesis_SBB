@@ -36,24 +36,18 @@ class StationMATGCNDataset(Dataset):
         e = self.E[idx : idx + self.T]          # [T, E]
         y = self.Y[idx + self.T : idx + self.T + self.H]   # [H, N]
 
-        # Create mask BEFORE any modification
-        mask = ~torch.isnan(y)   # True where valid
-
-        # Replace NaNs with 0 to avoid propagation in loss
-        y = torch.nan_to_num(y, nan=0.0)
-
-        return x, e, y, mask
+        return x, e, y
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-F = 4 # Node feature dimension
+F = 10 # Node feature dimension
 T = 12 # History length
 E = 6 # external feature dimension
 H = 12 # Prediction horizon
 B = 64 # Batch size
 N = 12 # Number of nodes
-epochs = 10
+epochs = 20
 
 model = StationMATGCN(
     num_station_features=F,
@@ -73,14 +67,23 @@ adj = torch.tensor(create_adj_matrix(station_list_path))
 
 
 laplacian = compute_laplacian(adj).float().to(device)
-print("NaNs in laplacian:", torch.isnan(laplacian).sum())
+lambda_max = torch.linalg.eigvals(laplacian).real.max()
+laplacian = (2 / lambda_max) * laplacian - torch.eye(laplacian.size(0))
 
 training_data_path = os.path.join("data", "train_data_weather.parquet")
 df = pd.read_parquet(training_data_path)
+df["hour_sin"] = np.sin(2 * np.pi * df["OPERATION_PLANNED_TIMESTAMP"].dt.hour / 24)
+df["hour_cos"] = np.cos(2 * np.pi * df["OPERATION_PLANNED_TIMESTAMP"].dt.hour / 24)
+
+df["dow_sin"] = np.sin(2 * np.pi * df["OPERATION_PLANNED_TIMESTAMP"].dt.dayofweek / 7)
+df["dow_cos"] = np.cos(2 * np.pi * df["OPERATION_PLANNED_TIMESTAMP"].dt.dayofweek / 7)
 df = df.sort_values("OPERATION_PLANNED_TIMESTAMP")
 df = df.reset_index(drop=True)
 
 station_tensor, external_tensor, target_tensor, timestamps = create_df_tensors(df)
+# Normalize tensors
+station_tensor = (station_tensor - station_tensor.mean()) / (station_tensor.std() + 1e-6)
+external_tensor = (external_tensor - external_tensor.mean()) / (external_tensor.std() + 1e-6)
 print("NaNs in station:", np.isnan(station_tensor).sum())
 print("NaNs in external:", np.isnan(external_tensor).sum())
 print("NaNs in target:", np.isnan(target_tensor).sum())
@@ -121,6 +124,13 @@ train_target = target_tensor[train_idx]
 val_target   = target_tensor[val_idx]
 test_target  = target_tensor[test_idx]
 
+# Normalize if RMSE 0.3 its very good
+mean = np.nanmean(train_target)
+std = np.nanstd(train_target) + 1e-6
+train_target = (train_target - mean) / std
+val_target   = (val_target - mean) / std
+test_target  = (test_target - mean) / std
+
 train_dataset = StationMATGCNDataset(
     train_station, train_ext, train_target, T, H
 )
@@ -153,22 +163,18 @@ def evaluate(model, dataloader, laplacian, criterion, device):
 
     with torch.no_grad():
 
-        for x, e, y, mask in dataloader:
+        for x, e, y in dataloader:
 
             x = x.to(device)
             e = e.to(device)
             y = y.to(device)
             y = y.permute(0, 2, 1)
-            mask = mask.to(device)
-            mask = mask.permute(0,2,1)
 
             pred = model(x, e, laplacian)
 
-            # Masked MAE
+
             #loss = criterion(pred, y)
-            loss = torch.abs(pred - y)
-            loss = loss * mask
-            loss = loss.sum() / mask.sum().clamp(min=1)
+            loss = torch.nn.functional.smooth_l1_loss(pred, y)
 
             batch_size = x.shape[0]
 
@@ -176,16 +182,15 @@ def evaluate(model, dataloader, laplacian, criterion, device):
             total_samples += batch_size
 
             # Collect ONLY valid values for RMSE
-            all_preds.append(pred[mask].cpu())
-            all_targets.append(y[mask].cpu())
+            all_preds.append(pred.cpu())
+            all_targets.append(y.cpu())
 
     # Concatenate all batches
-    all_preds = torch.cat(all_preds).numpy()
-    all_targets = torch.cat(all_targets).numpy()
+    all_preds = torch.cat(all_preds).cpu().numpy()
+    all_targets = torch.cat(all_targets).cpu().numpy()
 
-    # Flatten everything
-    #all_preds = all_preds.reshape(-1).numpy()
-    #all_targets = all_targets.reshape(-1).numpy()
+    all_preds = all_preds.reshape(-1)
+    all_targets = all_targets.reshape(-1)
 
     rmse = root_mean_squared_error(all_targets, all_preds)
 
@@ -201,26 +206,23 @@ for epoch in range(epochs):
     running_loss = 0
     total_samples = 0
 
-    for x, e, y, mask in train_loader:
+    for x, e, y in train_loader:
 
         x = x.to(device)
         e = e.to(device)
         y = y.to(device)
         y = y.permute(0, 2, 1)  # [B, N, H]
-        mask = mask.to(device)
-        mask = mask.permute(0, 2, 1)
-        #print("Valid ratio:", mask.float().mean().item())
+
 
         optimizer.zero_grad()
 
         
         pred = model(x, e, laplacian)
-        # MASKED MAE
-        #loss = criterion(pred, y)
-        loss = torch.abs(pred - y)
-        loss = loss * mask  # zero-out invalid entries
+        pred = pred * std + mean
+        y    = y * std + mean   
 
-        loss = loss.sum() / mask.sum().clamp(min=1)
+        #loss = criterion(pred, y)
+        loss = torch.nn.functional.smooth_l1_loss(pred, y)
 
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
@@ -262,7 +264,7 @@ for epoch in range(epochs):
         f"Epoch {epoch+1}/{epochs} | "
         f"Train Loss: {train_loss:.4f} | "
         f"Val Loss: {val_loss:.4f} | "
-        f"Val RMSE: {val_rmse:.4f}"
+        f"Val RMSE: {val_rmse:.4f} (Normalized: {val_rmse * std})"
     )
 
 torch.save(model.state_dict(), "matgcn_model.pt")
@@ -275,7 +277,7 @@ test_loss, test_rmse = evaluate(
     device
 )
 
-print(f"Test Loss: {test_loss:.4f} | Test RMSE: {test_rmse:.4f}")
+print(f"Test Loss: {test_loss:.4f} | Test RMSE: {test_rmse:.4f} (Normalized: {test_rmse * std})")
 
 
 
