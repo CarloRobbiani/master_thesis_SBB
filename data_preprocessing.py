@@ -73,7 +73,7 @@ def full_pipeline_preparing(csv_filepath):
 
 def preprocess_train(df, target_column="OPERATIONAL_PUNCTUAL"):
     """
-    Preprocess the dataframe for training
+    Preprocess the dataframe for training of the XGBoost model
     """
 
     # -----------------------
@@ -95,17 +95,14 @@ def preprocess_train(df, target_column="OPERATIONAL_PUNCTUAL"):
         df[f"{col}_day"] = df[col].dt.day
         df[f"{col}_weekday"] = df[col].dt.weekday
 
-    # Delay feature (very useful!)
-    df["delay_seconds"] = (
-        (df["OPERATION_ACTUAL_TIMESTAMP"] - df["OPERATION_PLANNED_TIMESTAMP"])
-        .dt.total_seconds()
-    )
+    # Delay feature
+    df["delay_seconds"] = df["DAILY_PLAN_OPERATIONAL_DELAY_SEC"] 
 
     # Drop original timestamps
     df = df.drop(columns=time_cols)
 
     # -----------------------
-    # 3. Boolean → int
+    # 3. Boolean to int
     # -----------------------
     print("converting boolean to int...")
     df["EVENT_SERVED"] = df["EVENT_SERVED"].astype(int)
@@ -119,18 +116,11 @@ def preprocess_train(df, target_column="OPERATIONAL_PUNCTUAL"):
     for col in cat_cols:
         df[col] = df[col].astype("category").cat.codes
 
-    """ encoders = {}
-    for col in cat_cols:
-        le = LabelEncoder()
-        df[col] = df[col].astype(str)
-        df[col] = le.fit_transform(df[col])
-        encoders[col] = le """
-
     # -----------------------
     # 5. Handle missing values
     # -----------------------
     print("handling missing values...")
-    df = df.fillna(-1)
+    df = df.fillna(0)
 
     # -----------------------
     # 6. Split X / y
@@ -140,62 +130,6 @@ def preprocess_train(df, target_column="OPERATIONAL_PUNCTUAL"):
     print("finished preprocessing...")
 
     return X, y
-
-
-
-def create_df_tensors(df: pd.DataFrame):
-    # Define feature groups for station MATGCN:
-
-    station_feature_cols = [
-        "delay_mean",
-        "num_trains",
-        "platform_occ"
-    ]
-
-    external_cols = [
-        "temperature",
-        "precipitation",
-        "hour_sin",
-        "hour_cos"
-    ]
-
-    target_col = "target_delay"
-
-    # Sort the data
-
-    df = df.sort_values(["timestamp", "station_id"])
-
-    # Extract dimensions
-    timestamps = df["timestamp"].unique()
-    stations =["BI","TUE","TWN","LIG","CHAV","POU","NV","LD","CRNE","CORN","SBLB","NE"]
-
-    T_total = len(timestamps)
-    N = len(stations)
-
-    F = len(station_feature_cols)
-    E = len(external_cols)
-
-    station_tensor = np.stack([
-        df.pivot_table(index="timestamp", columns="station_id", values=station_feature_cols)
-          .reindex(index=timestamps, columns=stations)
-          .values
-        for col in station_feature_cols
-    ], axis=-1)
-
-    target_tensor = (
-    df.pivot_table(index="timestamp", columns="station_id", values=target_col)
-    .reindex(index=timestamps, columns=stations)
-    .values
-    )
-
-    external_df = (
-        df.drop_duplicates("timestamp")
-        .sort_values("timestamp")
-    )
-
-    external_tensor = external_df[external_cols].values
-
-    return station_tensor, external_tensor, target_tensor
 
 
 if __name__ == "__main__":

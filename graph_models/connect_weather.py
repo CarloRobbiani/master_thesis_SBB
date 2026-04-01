@@ -1,6 +1,11 @@
 import pandas as pd
 
 def connect_weather_stations(weather_file = None, connectionfile=None, train_file="data/train_data.parquet"):
+    """
+    Connects the weather station with the train station.
+    Merges based on nearest match of timestamp
+    Returns: .parquet file with all data
+    """
     json_weather = pd.read_json("graph_models\weather_connection.json")
 
     neu_weather = prepare_neuchatel()

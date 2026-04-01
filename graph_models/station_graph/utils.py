@@ -3,6 +3,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pandas as pd
 import numpy as np
+import os
+import sys
+sys.path.append(
+    os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir)))
+
+from adjacency import create_adj_matrix
+from sklearn.metrics import root_mean_squared_error
 
 
 class ChebGraphConv(nn.Module):
@@ -99,8 +106,52 @@ def compute_laplacian(adj):
     D_inv_sqrt = torch.diag(1.0 / torch.sqrt(torch.sum(adj, dim=1) + 1e-6))
     return D_inv_sqrt @ L @ D_inv_sqrt
 
-def create_df_tensors(df: pd.DataFrame):
+def prepare_laplacian(station_list_path, device):
+    """
+    Takes the station_list path that points to a .csv file and returns the 
+    laplacian from the adjacency matrix
+    """
+    adj = torch.tensor(create_adj_matrix(station_list_path))
+    laplacian = compute_laplacian(adj).float().to(device)
+    lambda_max = torch.linalg.eigvals(laplacian).real.max()
+    laplacian = (2 / lambda_max) * laplacian - torch.eye(laplacian.size(0))
+    return laplacian
 
+def filter_tensors(data_tensor: torch.tensor, train_end, val_end, timestamps):
+    """
+    Filter the tensor based on the given timestamps.
+    Returns a train, test and val tensor
+    """
+    # Remove timezone if present
+    if isinstance(timestamps, pd.DatetimeIndex):
+        if timestamps.tz is not None:
+            timestamps = timestamps.tz_convert(None)
+    elif isinstance(timestamps, pd.Series):
+        if timestamps.dt.tz is not None:
+            timestamps = timestamps.dt.tz_convert(None)
+    else:
+        # If it's a plain Index, try to convert to DatetimeIndex
+        timestamps = pd.to_datetime(timestamps, utc=True)
+        if hasattr(timestamps, 'tz') and timestamps.tz is not None:
+            timestamps = timestamps.tz_convert(None)
+    
+    train_idx = timestamps < train_end
+    val_idx   = (timestamps >= train_end) & (timestamps < val_end)
+    test_idx  = timestamps >= val_end
+
+    train = data_tensor[train_idx]
+    val = data_tensor[val_idx]
+    test = data_tensor[test_idx]
+
+    return train, val, test
+    
+
+def create_df_tensors(df: pd.DataFrame):
+    """
+    Creates tensors from the train Dataframe
+    Returns: station_tensor, external_tensor, target_tensor, timestamps
+    """
+    # Features the stations should have
     station_feature_cols = [
         "EVENT_TYPE",
         "EVENT_SERVED",
@@ -114,6 +165,7 @@ def create_df_tensors(df: pd.DataFrame):
         "dow_cos"
     ]
 
+    # Features for the external tensor
     external_cols = [
         'tre200s0', 'fkl010z1', 'fu3010z0', 'rre150z0',
        'htoauts0', 'hto000d0'
@@ -121,18 +173,16 @@ def create_df_tensors(df: pd.DataFrame):
 
     target_col = "DAILY_PLAN_OPERATIONAL_DELAY_SEC"
 
-    # --- 1. Sort ---
+    # --- Sort ---
     df = df.sort_values(["OPERATION_ACTUAL_TIMESTAMP", "OPERATING_POINT_ABBREVIATION"])
 
-    # -----------------------
-    #  Boolean → int
-    # -----------------------
+
+    # ---  Convert Boolean to int ---
     print("converting boolean to int...")
     df["EVENT_SERVED"] = df["EVENT_SERVED"].astype(int)
 
-    # -----------------------
-    #  Categorical encoding
-    # -----------------------
+
+    # --- Categorical encoding ---
     print("categoircal encoding...")
     exclude_cols = ["OPERATING_POINT_ABBREVIATION", "OPERATION_ACTUAL_TIMESTAMP"]
 
@@ -144,13 +194,11 @@ def create_df_tensors(df: pd.DataFrame):
     for col in cat_cols:
         df[col] = df[col].astype("category").cat.codes
 
-    # -----------------------
-    # Handle missing values
-    # -----------------------
+    # --- Handle missing values ---
     print("handling missing values...")
     df = df.fillna(0)
 
-    # --- 2. Create consistent indices ---
+    # --- Create consistent indices ---
     timestamps = sorted(df["OPERATION_ACTUAL_TIMESTAMP"].unique())
     stations = ["BI","TUE","TWN","LIG","CHAV","POU","NV","LD","CRNE","CORN","SBLB","NE"]
 
@@ -163,12 +211,12 @@ def create_df_tensors(df: pd.DataFrame):
     F = len(station_feature_cols)
     E = len(external_cols)
 
-    # --- 3. Initialize tensors ---
+    # ---  Initialize tensors ---
     station_tensor = np.full((T_total, N, F), np.nan, dtype=np.float32)
     target_tensor = np.full((T_total, N), np.nan, dtype=np.float32)
     external_tensor = np.full((T_total, E), np.nan, dtype=np.float32)
 
-    # --- 4. Fill tensors safely ---
+    # --- Fill tensors safely ---
     for _, row in df.iterrows():
 
         t = timestamp_to_idx[row["OPERATION_ACTUAL_TIMESTAMP"]]
@@ -181,11 +229,11 @@ def create_df_tensors(df: pd.DataFrame):
         target_tensor[t, n] = row[target_col]
         #target_tensor = np.nan_to_num(target_tensor, nan=0.0)
 
-        # External (same for all stations → overwrite is fine)
+        # External (same for all stations)
         if np.isnan(external_tensor[t, 0]):
             external_tensor[t, :] = row[external_cols].values
 
-    # --- 5. Handle missing values ---
+    # --- Handle missing values ---
 
     target_tensor = np.nan_to_num(target_tensor, nan=0.0)   # Replace NaNs in target NO DELAY = 0
 
@@ -200,3 +248,49 @@ def create_df_tensors(df: pd.DataFrame):
             station_tensor[:, n, f] = series.ffill().fillna(0)
 
     return station_tensor, external_tensor, target_tensor, timestamps
+
+
+def evaluate(model, dataloader, laplacian, criterion, device):
+
+    model.eval()
+
+    total_loss = 0
+    total_samples = 0
+
+    all_preds = []
+    all_targets = []
+
+    with torch.no_grad():
+
+        for x, e, y in dataloader:
+
+            x = x.to(device)
+            e = e.to(device)
+            y = y.to(device)
+            y = y.permute(0, 2, 1)
+
+            pred = model(x, e, laplacian)
+
+
+            #loss = criterion(pred, y)
+            loss = torch.nn.functional.smooth_l1_loss(pred, y)
+
+            batch_size = x.shape[0]
+
+            total_loss += loss.item() * batch_size
+            total_samples += batch_size
+
+            # Collect ONLY valid values for RMSE
+            all_preds.append(pred.cpu())
+            all_targets.append(y.cpu())
+
+    # Concatenate all batches
+    all_preds = torch.cat(all_preds).cpu().numpy()
+    all_targets = torch.cat(all_targets).cpu().numpy()
+
+    all_preds = all_preds.reshape(-1)
+    all_targets = all_targets.reshape(-1)
+
+    rmse = root_mean_squared_error(all_targets, all_preds)
+
+    return total_loss / total_samples, rmse

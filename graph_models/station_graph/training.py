@@ -1,6 +1,6 @@
 import torch
 from stationMATGCN import StationMATGCN
-from utils import compute_laplacian, create_df_tensors
+from utils import create_df_tensors, prepare_laplacian, filter_tensors, evaluate
 from torch.utils.data import Dataset
 import sys
 import os
@@ -10,7 +10,6 @@ sys.path.append(
 import pandas as pd
 from torch.utils.data import DataLoader
 from adjacency import create_adj_matrix
-from sklearn.metrics import root_mean_squared_error
 import numpy as np
 
 
@@ -63,18 +62,13 @@ criterion = torch.nn.L1Loss()
 
 
 station_list_path = os.path.join("data", "station_list.csv")
-adj = torch.tensor(create_adj_matrix(station_list_path))
-
-
-laplacian = compute_laplacian(adj).float().to(device)
-lambda_max = torch.linalg.eigvals(laplacian).real.max()
-laplacian = (2 / lambda_max) * laplacian - torch.eye(laplacian.size(0))
+laplacian = prepare_laplacian(station_list_path, device)
 
 training_data_path = os.path.join("data", "train_data_weather.parquet")
 df = pd.read_parquet(training_data_path)
+
 df["hour_sin"] = np.sin(2 * np.pi * df["OPERATION_PLANNED_TIMESTAMP"].dt.hour / 24)
 df["hour_cos"] = np.cos(2 * np.pi * df["OPERATION_PLANNED_TIMESTAMP"].dt.hour / 24)
-
 df["dow_sin"] = np.sin(2 * np.pi * df["OPERATION_PLANNED_TIMESTAMP"].dt.dayofweek / 7)
 df["dow_cos"] = np.cos(2 * np.pi * df["OPERATION_PLANNED_TIMESTAMP"].dt.dayofweek / 7)
 df = df.sort_values("OPERATION_PLANNED_TIMESTAMP")
@@ -82,8 +76,8 @@ df = df.reset_index(drop=True)
 
 station_tensor, external_tensor, target_tensor, timestamps = create_df_tensors(df)
 # Normalize tensors
-station_tensor = (station_tensor - station_tensor.mean()) / (station_tensor.std() + 1e-6)
-external_tensor = (external_tensor - external_tensor.mean()) / (external_tensor.std() + 1e-6)
+#station_tensor = (station_tensor - station_tensor.mean()) / (station_tensor.std() + 1e-6)
+#external_tensor = (external_tensor - external_tensor.mean()) / (external_tensor.std() + 1e-6)
 print("NaNs in station:", np.isnan(station_tensor).sum())
 print("NaNs in external:", np.isnan(external_tensor).sum())
 print("NaNs in target:", np.isnan(target_tensor).sum())
@@ -91,38 +85,14 @@ timestamps = pd.to_datetime(timestamps, utc=True)      # parse correctly
 
 #print(timestamps)
 
-# Remove timezone if present
-if isinstance(timestamps, pd.DatetimeIndex):
-    if timestamps.tz is not None:
-        timestamps = timestamps.tz_convert(None)
-elif isinstance(timestamps, pd.Series):
-    if timestamps.dt.tz is not None:
-        timestamps = timestamps.dt.tz_convert(None)
-else:
-    # If it's a plain Index, try to convert to DatetimeIndex
-    timestamps = pd.to_datetime(timestamps, utc=True)
-    if hasattr(timestamps, 'tz') and timestamps.tz is not None:
-        timestamps = timestamps.tz_convert(None)
 
 train_end = pd.Timestamp("2025-02-28")
 val_end   = pd.Timestamp("2025-03-31")
 
+train_station, val_station, test_station = filter_tensors(station_tensor, train_end, val_end, timestamps)
+train_ext, val_ext, test_ext = filter_tensors(external_tensor, train_end, val_end, timestamps)
+train_target, val_target, test_target = filter_tensors(target_tensor, train_end, val_end, timestamps)
 
-train_idx = timestamps < train_end
-val_idx   = (timestamps >= train_end) & (timestamps < val_end)
-test_idx  = timestamps >= val_end
-
-train_station = station_tensor[train_idx]
-val_station   = station_tensor[val_idx]
-test_station  = station_tensor[test_idx]
-
-train_ext = external_tensor[train_idx]
-val_ext   = external_tensor[val_idx]
-test_ext  = external_tensor[test_idx]
-
-train_target = target_tensor[train_idx]
-val_target   = target_tensor[val_idx]
-test_target  = target_tensor[test_idx]
 
 # Normalize if RMSE 0.3 its very good
 mean = np.nanmean(train_target)
@@ -143,58 +113,13 @@ test_dataset = StationMATGCNDataset(
     test_station, test_ext, test_target, T, H
 )
 
-# Create different dataloaders for this
+# Create different dataloaders
 train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 
 val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
 
 test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
-
-def evaluate(model, dataloader, laplacian, criterion, device):
-
-    model.eval()
-
-    total_loss = 0
-    total_samples = 0
-
-    all_preds = []
-    all_targets = []
-
-    with torch.no_grad():
-
-        for x, e, y in dataloader:
-
-            x = x.to(device)
-            e = e.to(device)
-            y = y.to(device)
-            y = y.permute(0, 2, 1)
-
-            pred = model(x, e, laplacian)
-
-
-            #loss = criterion(pred, y)
-            loss = torch.nn.functional.smooth_l1_loss(pred, y)
-
-            batch_size = x.shape[0]
-
-            total_loss += loss.item() * batch_size
-            total_samples += batch_size
-
-            # Collect ONLY valid values for RMSE
-            all_preds.append(pred.cpu())
-            all_targets.append(y.cpu())
-
-    # Concatenate all batches
-    all_preds = torch.cat(all_preds).cpu().numpy()
-    all_targets = torch.cat(all_targets).cpu().numpy()
-
-    all_preds = all_preds.reshape(-1)
-    all_targets = all_targets.reshape(-1)
-
-    rmse = root_mean_squared_error(all_targets, all_preds)
-
-    return total_loss / total_samples, rmse
 
 train_losses = []
 val_losses = []
