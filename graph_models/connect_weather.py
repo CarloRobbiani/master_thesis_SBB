@@ -17,6 +17,9 @@ def connect_weather_stations(weather_file = None, connectionfile=None, train_fil
     train_df["OPERATION_PLANNED_TIMESTAMP"] = pd.to_datetime(train_df["OPERATION_PLANNED_TIMESTAMP"], format="%Y-%m-%d %H:%M:%S.%f %z", utc=True)
     train_df["OPERATION_PLANNED_TIMESTAMP"] = train_df["OPERATION_PLANNED_TIMESTAMP"].dt.tz_localize(None) # remove timezone
     train_df["OPERATION_PLANNED_TIMESTAMP"] = train_df["OPERATION_PLANNED_TIMESTAMP"].dt.floor("min") # round down to minute
+    train_df["OPERATION_ACTUAL_TIMESTAMP"] = pd.to_datetime(train_df["OPERATION_ACTUAL_TIMESTAMP"], format="%Y-%m-%d %H:%M:%S.%f %z", utc=True)
+    train_df["OPERATION_ACTUAL_TIMESTAMP"] = train_df["OPERATION_ACTUAL_TIMESTAMP"].dt.tz_localize(None) # remove timezone
+    train_df["OPERATION_ACTUAL_TIMESTAMP"] = train_df["OPERATION_ACTUAL_TIMESTAMP"].dt.floor("min") # round down to minute
     train_df = train_df.sort_values("OPERATION_PLANNED_TIMESTAMP")
     train_df = train_df.dropna()
     

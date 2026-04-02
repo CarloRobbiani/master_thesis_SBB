@@ -1,4 +1,4 @@
 {
-    "Neuchatel": ["NV", "LD", "CRNE", "CORN", "SBLB", "NE"],
-    "Grenchen": ["BI", "TUE", "TWN", "LIG", "CHAV", "POU"]
+    "Neuchatel": [ "LD", "CRNE", "CORN", "SBLB", "NE"],
+    "Grenchen": ["BI", "TUE", "TWN", "LIG", "NV"]
 }

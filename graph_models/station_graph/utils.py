@@ -98,8 +98,8 @@ class STBlock(nn.Module):
         x = self.temporal_conv(x)
         x = x.permute(0, 2, 3, 1)
 
-        #return self.norm(x + residual)
-        return self.norm(x)
+        return self.norm(x + residual)
+        #return self.norm(x)
     
 def compute_laplacian(adj):
     D = torch.diag(torch.sum(adj, dim=1))
@@ -115,7 +115,7 @@ def prepare_laplacian(station_list_path, device):
     adj = torch.tensor(create_adj_matrix(station_list_path))
     laplacian = compute_laplacian(adj).float().to(device)
     lambda_max = torch.linalg.eigvals(laplacian).real.max()
-    laplacian = (2 / lambda_max) * laplacian - torch.eye(laplacian.size(0))
+    laplacian = (2 / lambda_max) * laplacian - torch.eye(laplacian.size(0), device=device)
     return laplacian
 
 def filter_tensors(data_tensor: torch.tensor, train_end, val_end, timestamps):
@@ -201,7 +201,7 @@ def create_df_tensors(df: pd.DataFrame):
 
     # --- Create consistent indices ---
     timestamps = sorted(df["OPERATION_ACTUAL_TIMESTAMP"].unique())
-    stations = ["BI","TUE","TWN","LIG","CHAV","POU","NV","LD","CRNE","CORN","SBLB","NE"]
+    stations = ["BI","TUE","TWN","LIG","NV","LD","CRNE","CORN","SBLB","NE"]
 
     timestamp_to_idx = {t: i for i, t in enumerate(timestamps)}
     station_to_idx = {s: i for i, s in enumerate(stations)}

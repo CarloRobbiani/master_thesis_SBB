@@ -45,19 +45,19 @@ T = 12 # History length
 E = 6 # external feature dimension
 H = 12 # Prediction horizon
 B = 64 # Batch size
-N = 12 # Number of nodes
-epochs = 20
+N = 10 # Number of nodes
+epochs = 50
 
 model = StationMATGCN(
     num_station_features=F,
     num_external_features=E,
     hidden_dim=32,
-    K=2,
+    K=3,
     num_blocks=2,
     horizon=H
 ).to(device)
 
-optimizer = torch.optim.Adam(model.parameters(), lr=3e-3)
+optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
 criterion = torch.nn.L1Loss()
 
 
@@ -67,11 +67,11 @@ laplacian = prepare_laplacian(station_list_path, device)
 training_data_path = os.path.join("data", "train_data_weather.parquet")
 df = pd.read_parquet(training_data_path)
 
-df["hour_sin"] = np.sin(2 * np.pi * df["OPERATION_PLANNED_TIMESTAMP"].dt.hour / 24)
-df["hour_cos"] = np.cos(2 * np.pi * df["OPERATION_PLANNED_TIMESTAMP"].dt.hour / 24)
-df["dow_sin"] = np.sin(2 * np.pi * df["OPERATION_PLANNED_TIMESTAMP"].dt.dayofweek / 7)
-df["dow_cos"] = np.cos(2 * np.pi * df["OPERATION_PLANNED_TIMESTAMP"].dt.dayofweek / 7)
-df = df.sort_values("OPERATION_PLANNED_TIMESTAMP")
+df["hour_sin"] = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 24)
+df["hour_cos"] = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 24)
+df["dow_sin"] = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
+df["dow_cos"] = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
+df = df.sort_values("OPERATION_ACTUAL_TIMESTAMP")
 df = df.reset_index(drop=True)
 
 station_tensor, external_tensor, target_tensor, timestamps = create_df_tensors(df)
@@ -90,12 +90,19 @@ train_station, val_station, test_station = filter_tensors(station_tensor, train_
 train_ext, val_ext, test_ext = filter_tensors(external_tensor, train_end, val_end, timestamps)
 train_target, val_target, test_target = filter_tensors(target_tensor, train_end, val_end, timestamps)
 
-# Normalize tensors
+# Normalize station features
 station_mean = train_station.mean()
 station_std  = train_station.std() + 1e-6
 train_station = (train_station - station_mean) / station_std
 val_station   = (val_station - station_mean) / station_std
 test_station  = (test_station - station_mean) / station_std
+
+# Normalize external features
+ext_mean = train_ext.mean(axis=0)
+ext_std  = train_ext.std(axis=0) + 1e-6
+train_ext = (train_ext - ext_mean) / ext_std
+val_ext   = (val_ext   - ext_mean) / ext_std
+test_ext  = (test_ext  - ext_mean) / ext_std
 
 
 # Normalize if RMSE 0.3 its very good
