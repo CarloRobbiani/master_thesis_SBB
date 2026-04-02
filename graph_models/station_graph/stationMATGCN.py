@@ -7,8 +7,8 @@ class StationMATGCN(nn.Module):
         self,
         num_station_features,
         num_external_features,
-        hidden_dim=64,
-        K=3,
+        hidden_dim=32,
+        K=2,
         num_blocks=2,
         horizon=12
     ):
@@ -40,6 +40,6 @@ class StationMATGCN(nn.Module):
         for block in self.blocks:
             x = block(x, laplacian)
 
-        #out = self.output_layer(x[:, -1])
-        out = self.output_layer(x.mean(dim=1))
+        out = self.output_layer(x[:, -1])
+        #out = self.output_layer(x.mean(dim=1))
         return out.transpose(1, 2)

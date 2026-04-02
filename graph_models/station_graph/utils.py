@@ -98,7 +98,8 @@ class STBlock(nn.Module):
         x = self.temporal_conv(x)
         x = x.permute(0, 2, 3, 1)
 
-        return self.norm(x + residual)
+        #return self.norm(x + residual)
+        return self.norm(x)
     
 def compute_laplacian(adj):
     D = torch.diag(torch.sum(adj, dim=1))
@@ -270,7 +271,6 @@ def evaluate(model, dataloader, laplacian, criterion, device):
             y = y.permute(0, 2, 1)
 
             pred = model(x, e, laplacian)
-
 
             #loss = criterion(pred, y)
             loss = torch.nn.functional.smooth_l1_loss(pred, y)

@@ -51,13 +51,13 @@ epochs = 20
 model = StationMATGCN(
     num_station_features=F,
     num_external_features=E,
-    hidden_dim=64,
-    K=3,
+    hidden_dim=32,
+    K=2,
     num_blocks=2,
     horizon=H
 ).to(device)
 
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+optimizer = torch.optim.Adam(model.parameters(), lr=3e-3)
 criterion = torch.nn.L1Loss()
 
 
@@ -75,9 +75,6 @@ df = df.sort_values("OPERATION_PLANNED_TIMESTAMP")
 df = df.reset_index(drop=True)
 
 station_tensor, external_tensor, target_tensor, timestamps = create_df_tensors(df)
-# Normalize tensors
-#station_tensor = (station_tensor - station_tensor.mean()) / (station_tensor.std() + 1e-6)
-#external_tensor = (external_tensor - external_tensor.mean()) / (external_tensor.std() + 1e-6)
 print("NaNs in station:", np.isnan(station_tensor).sum())
 print("NaNs in external:", np.isnan(external_tensor).sum())
 print("NaNs in target:", np.isnan(target_tensor).sum())
@@ -92,6 +89,13 @@ val_end   = pd.Timestamp("2025-03-31")
 train_station, val_station, test_station = filter_tensors(station_tensor, train_end, val_end, timestamps)
 train_ext, val_ext, test_ext = filter_tensors(external_tensor, train_end, val_end, timestamps)
 train_target, val_target, test_target = filter_tensors(target_tensor, train_end, val_end, timestamps)
+
+# Normalize tensors
+station_mean = train_station.mean()
+station_std  = train_station.std() + 1e-6
+train_station = (train_station - station_mean) / station_std
+val_station   = (val_station - station_mean) / station_std
+test_station  = (test_station - station_mean) / station_std
 
 
 # Normalize if RMSE 0.3 its very good
@@ -143,8 +147,6 @@ for epoch in range(epochs):
 
         
         pred = model(x, e, laplacian)
-        pred = pred * std + mean
-        y    = y * std + mean   
 
         #loss = criterion(pred, y)
         loss = torch.nn.functional.smooth_l1_loss(pred, y)
