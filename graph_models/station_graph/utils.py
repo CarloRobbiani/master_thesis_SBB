@@ -177,6 +177,16 @@ def create_df_tensors(df: pd.DataFrame):
     # --- Sort ---
     df = df.sort_values(["OPERATION_ACTUAL_TIMESTAMP", "OPERATING_POINT_ABBREVIATION"])
 
+    # DEBUG: check which stations in the data match your hardcoded list
+    data_stations = set(df["OPERATING_POINT_ABBREVIATION"].unique())
+    expected_stations = {"BI","TUE","TWN","LIG","NV","LD","CRNE","CORN","SBLB","NE"}
+    unrecognised = data_stations - expected_stations
+    missing_from_data = expected_stations - data_stations
+    if unrecognised:
+        print(f"  WARNING: stations in data but not in hardcoded list (will be ignored): {unrecognised}")
+    if missing_from_data:
+        print(f"  WARNING: stations in hardcoded list but not in data (always NaN): {missing_from_data}")
+
 
     # ---  Convert Boolean to int ---
     print("converting boolean to int...")
@@ -197,7 +207,12 @@ def create_df_tensors(df: pd.DataFrame):
 
     # --- Handle missing values ---
     print("handling missing values...")
-    df = df.fillna(0)
+    #df = df.fillna(0)
+    print("\n[DEBUG create_df_tensors] --- Dropping rows with NaN target ---")
+    n_before = len(df)
+    df = df.dropna(subset=[target_col])
+    n_after = len(df)
+    print(f"  Dropped {n_before - n_after} rows  ({n_before} reduced to {n_after})")
 
     # --- Create consistent indices ---
     timestamps = sorted(df["OPERATION_ACTUAL_TIMESTAMP"].unique())
@@ -234,10 +249,14 @@ def create_df_tensors(df: pd.DataFrame):
         if np.isnan(external_tensor[t, 0]):
             external_tensor[t, :] = row[external_cols].values
 
-    # --- Handle missing values ---
 
-    target_tensor = np.nan_to_num(target_tensor, nan=0.0)   # Replace NaNs in target NO DELAY = 0
-
+    ext_missing_before = np.isnan(external_tensor[:, 0]).sum()
+    print(f"\n[DEBUG create_df_tensors] --- Before forward-fill ---")
+    print(f"  Timesteps with no external data: {ext_missing_before} / {T_total}")
+    print(f"  NaNs — station: {np.isnan(station_tensor).sum()}  "
+          f"external: {np.isnan(external_tensor).sum()}  "
+          f"target: {np.isnan(target_tensor).sum()}")
+    
     # forward fill over time
     for f in range(E):
         series = pd.Series(external_tensor[:, f])
@@ -247,6 +266,10 @@ def create_df_tensors(df: pd.DataFrame):
         for f in range(F):
             series = pd.Series(station_tensor[:, n, f])
             station_tensor[:, n, f] = series.ffill().fillna(0)
+
+    for n in range(N):
+        series = pd.Series(target_tensor[:, n])
+        target_tensor[:, n] = series.ffill(limit=3)
 
     return station_tensor, external_tensor, target_tensor, timestamps
 
@@ -263,17 +286,22 @@ def evaluate(model, dataloader, laplacian, criterion, device):
 
     with torch.no_grad():
 
-        for x, e, y in dataloader:
+        for x, e, y, m in dataloader:
 
             x = x.to(device)
             e = e.to(device)
             y = y.to(device)
             y = y.permute(0, 2, 1)
+            m = m.to(device)
+            m = m.permute(0, 2, 1)
 
             pred = model(x, e, laplacian)
 
             #loss = criterion(pred, y)
-            loss = torch.nn.functional.smooth_l1_loss(pred, y)
+            #loss = torch.nn.functional.smooth_l1_loss(pred, y)
+            # Masked loss
+            loss = ((pred - y) ** 2) * m
+            loss = loss.sum() / (m.sum() + 1e-6)
 
             batch_size = x.shape[0]
 
@@ -281,8 +309,8 @@ def evaluate(model, dataloader, laplacian, criterion, device):
             total_samples += batch_size
 
             # Collect ONLY valid values for RMSE
-            all_preds.append(pred.cpu())
-            all_targets.append(y.cpu())
+            all_preds.append(pred[m].cpu())
+            all_targets.append(y[m].cpu())
 
     # Concatenate all batches
     all_preds = torch.cat(all_preds).cpu().numpy()
