@@ -10,6 +10,7 @@ sys.path.append(
 
 from adjacency import create_adj_matrix
 from sklearn.metrics import root_mean_squared_error
+from sklearn.preprocessing import StandardScaler
 
 
 class ChebGraphConv(nn.Module):
@@ -322,3 +323,100 @@ def evaluate(model, dataloader, laplacian, criterion, device):
     rmse = root_mean_squared_error(all_targets, all_preds)
 
     return total_loss / total_samples, rmse
+
+
+def load_and_pivot(path, STATION_FEATURE_COLS, EXTERNAL_COLS):
+    """
+    Load the parquet file and return a 3-D array of shape (T, N, F)
+    plus a separate external array (T, E) and a list of station ids.
+ 
+    Strategy:
+      - Sort by DATE, then STATION_ID
+      - Pivot so rows = timesteps, columns = stations
+      - Return (station_features, external_features, station_ids, timestamps)
+    """
+    df = pd.read_parquet(path)
+    STATION_COL = "OPERATING_POINT_ABBREVIATION"
+    DATE_COL = "OPERATION_PLANNED_TIMESTAMP"
+    TARGET_COL = "DAILY_PLAN_OPERATIONAL_DELAY_SEC"
+    df = df.sort_values([DATE_COL, STATION_COL]).reset_index(drop=True)
+    exclude_cols = ["OPERATION_ACTUAL_TIMESTAMP", TARGET_COL, DATE_COL]
+
+    cat_cols = [
+        col for col in df.select_dtypes(include="object").columns
+        if col not in exclude_cols
+    ]
+
+    for col in cat_cols:
+        df[col] = df[col].astype("category").cat.codes
+
+    stations   = sorted(df[STATION_COL].unique())
+    timestamps = sorted(df[DATE_COL].unique())
+    N = len(stations)
+    T = len(timestamps)
+    print(f"  Timesteps : {T},  Stations : {N}")
+ 
+    station_idx = {s: i for i, s in enumerate(stations)}
+    time_idx    = {t: i for i, t in enumerate(timestamps)}
+ 
+    # ── auto-detect feature columns if not specified ──────────────────
+    #global STATION_FEATURE_COLS, EXTERNAL_COLS
+ 
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    # remove target, and columns we will handle separately
+    skip = {TARGET_COL, STATION_COL}
+ 
+    if not STATION_FEATURE_COLS and not EXTERNAL_COLS:
+        # Heuristic: a column is "external" if its std across stations at the
+        # same timestep is ~0 (same value everywhere).  Otherwise it's a
+        # station feature.
+        sample = df[df[DATE_COL] == timestamps[0]]
+        for col in numeric_cols:
+            if col in skip:
+                continue
+            if sample[col].std() < 1e-6:
+                EXTERNAL_COLS.append(col)
+            else:
+                STATION_FEATURE_COLS.append(col)
+ 
+    # Always add target to station features (as input for autoregressive use)
+    all_station_cols = STATION_FEATURE_COLS + [TARGET_COL]
+ 
+    print(f"  Station features ({len(all_station_cols)}): {all_station_cols}")
+    print(f"  External features ({len(EXTERNAL_COLS)}): {EXTERNAL_COLS}")
+ 
+    # ── build dense arrays ────────────────────────────────────────────
+    F = len(all_station_cols)
+    E = len(EXTERNAL_COLS) if EXTERNAL_COLS else 1   # at least 1 dim
+ 
+    station_arr  = np.zeros((T, N, F), dtype=np.float32)
+    external_arr = np.zeros((T, E),    dtype=np.float32)
+    target_arr   = np.zeros((T, N),    dtype=np.float32)
+ 
+    for _, row in df.iterrows():
+        t = time_idx[row[DATE_COL]]
+        n = station_idx[row[STATION_COL]]
+        station_arr[t, n, :] = [row[c] if pd.notna(row.get(c)) else 0.0
+                                 for c in all_station_cols]
+        target_arr[t, n]     = row[TARGET_COL] if pd.notna(row[TARGET_COL]) else 0.0
+        if EXTERNAL_COLS:
+            external_arr[t, :] = [row[c] if pd.notna(row.get(c)) else 0.0
+                                   for c in EXTERNAL_COLS]
+        else:
+            # dummy external feature (all zeros) if none found
+            external_arr[t, 0] = 0.0
+ 
+    return station_arr, external_arr, target_arr, stations
+ 
+ 
+def normalize(train_arr, val_arr, test_arr):
+    """Fit scaler on train, apply to all splits. Works on (T, N, F) arrays."""
+    T_tr, N, F = train_arr.shape
+    scaler = StandardScaler()
+    train_2d  = train_arr.reshape(-1, F)
+    scaler.fit(train_2d)
+    def _transform(arr):
+        sh = arr.shape
+        return scaler.transform(arr.reshape(-1, F)).reshape(sh)
+    return _transform(train_arr), _transform(val_arr), _transform(test_arr), scaler
+ 
