@@ -22,6 +22,7 @@ import os
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from sklearn.preprocessing import StandardScaler
+import numpy as np
 from stationMATGCN import StationMATGCN
 from utils import load_and_pivot, normalize, prepare_laplacian
 from delay_dataset import DelayDataset
@@ -50,7 +51,11 @@ STATION_FEATURE_COLS = [
         "PLAN_STOP_TYPE", 
         "OPERATION_DAY_PERIOD_IDENTIFIER_COARSE",
         'OPERATION_TRAFFIC_CATEGORY_ABBREVIATION',
-        'PLAN_FORMATION_MAXIMAL_VELOCITY']
+        'PLAN_FORMATION_MAXIMAL_VELOCITY',
+        "hour_sin",
+        "hour_cos",
+        "dow_sin",
+        "dow_cos"]
 
 # External / weather feature columns  (same value for all stations at a timestep)
 EXTERNAL_COLS = [ 
@@ -61,15 +66,15 @@ EXTERNAL_COLS = [
 HIDDEN_DIM  = 32
 K           = 3      # Chebyshev filter order
 NUM_BLOCKS  = 2
-HORIZON     = 1      # number of future steps to predict (set >1 for multi-step)
+HORIZON     = 1      # number of future steps to predict
 
 # ---- Sequence lengths ----
-SEQ_LEN     = 7      # lookback window (timesteps fed to the model)
+SEQ_LEN     = 14      # lookback window (timesteps fed to the model)
 
 # ---- Training ----
-EPOCHS      = 50
+EPOCHS      = 100
 BATCH_SIZE  = 32
-LR          = 5e-3
+LR          = 1e-3
 TRAIN_RATIO = 0.8
 DEVICE      = device
 
@@ -158,12 +163,16 @@ def main():
     # ── normalize ─────────────────────────────────────────────────────
     tr_st, va_st, te_st, feat_scaler = normalize(tr_st, va_st, te_st)
 
-    # Also normalize targets using the target column scaler
+    #  normalize targets using the log scaler
     # (last column of station_arr is TARGET_COL)
-    tgt_scaler = StandardScaler()
+    """ tgt_scaler = StandardScaler()
     tgt_scaler.fit(tr_tg.reshape(-1, 1))
     def scale_tgt(a): return tgt_scaler.transform(a.reshape(-1, 1)).reshape(a.shape)
-    tr_tg, va_tg, te_tg = scale_tgt(tr_tg), scale_tgt(va_tg), scale_tgt(te_tg)
+    tr_tg, va_tg, te_tg = scale_tgt(tr_tg), scale_tgt(va_tg), scale_tgt(te_tg) """
+
+    tr_tg = np.log1p(np.clip(tr_tg, 0, None))
+    va_tg = np.log1p(np.clip(va_tg, 0, None))
+    te_tg = np.log1p(np.clip(te_tg, 0, None))
 
     # ── datasets & loaders ───────────────────────────────────────────
     train_ds = DelayDataset(tr_st, tr_ex, tr_tg, SEQ_LEN, HORIZON)
@@ -219,8 +228,11 @@ def main():
     test_loss, test_mae, test_rmse = evaluate(model, test_loader, criterion, laplacian, DEVICE)
 
     # Un-scale metrics back to seconds
-    test_mae_sec  = test_mae  * tgt_scaler.scale_[0]
+    """ test_mae_sec  = test_mae  * tgt_scaler.scale_[0]
     test_rmse_sec = test_rmse * tgt_scaler.scale_[0]
+    """
+    test_mae_sec  = float(np.expm1(test_mae))
+    test_rmse_sec = float(np.expm1(test_rmse))
 
     print(f"\n{'─'*55}")
     print(f"Test  MAE : {test_mae_sec:>8.1f} sec")

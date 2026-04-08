@@ -339,6 +339,11 @@ def load_and_pivot(path, STATION_FEATURE_COLS, EXTERNAL_COLS):
     STATION_COL = "OPERATING_POINT_ABBREVIATION"
     DATE_COL = "OPERATION_PLANNED_TIMESTAMP"
     TARGET_COL = "DAILY_PLAN_OPERATIONAL_DELAY_SEC"
+    # Add temporal encoded time features
+    df["hour_sin"] = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 24)
+    df["hour_cos"] = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 24)
+    df["dow_sin"] = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
+    df["dow_cos"] = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
     df = df.sort_values([DATE_COL, STATION_COL]).reset_index(drop=True)
     exclude_cols = ["OPERATION_ACTUAL_TIMESTAMP", TARGET_COL, DATE_COL]
 
