@@ -69,10 +69,10 @@ NUM_BLOCKS  = 2
 HORIZON     = 1      # number of future steps to predict
 
 # ---- Sequence lengths ----
-SEQ_LEN     = 14      # lookback window (timesteps fed to the model)
+SEQ_LEN     = 28      # lookback window (timesteps fed to the model)
 
 # ---- Training ----
-EPOCHS      = 100
+EPOCHS      = 30
 BATCH_SIZE  = 32
 LR          = 1e-3
 TRAIN_RATIO = 0.8
@@ -165,14 +165,14 @@ def main():
 
     #  normalize targets using the log scaler
     # (last column of station_arr is TARGET_COL)
-    """ tgt_scaler = StandardScaler()
+    tgt_scaler = StandardScaler()
     tgt_scaler.fit(tr_tg.reshape(-1, 1))
     def scale_tgt(a): return tgt_scaler.transform(a.reshape(-1, 1)).reshape(a.shape)
-    tr_tg, va_tg, te_tg = scale_tgt(tr_tg), scale_tgt(va_tg), scale_tgt(te_tg) """
+    tr_tg, va_tg, te_tg = scale_tgt(tr_tg), scale_tgt(va_tg), scale_tgt(te_tg)
 
-    tr_tg = np.log1p(np.clip(tr_tg, 0, None))
+    """ tr_tg = np.log1p(np.clip(tr_tg, 0, None))
     va_tg = np.log1p(np.clip(va_tg, 0, None))
-    te_tg = np.log1p(np.clip(te_tg, 0, None))
+    te_tg = np.log1p(np.clip(te_tg, 0, None)) """
 
     # ── datasets & loaders ───────────────────────────────────────────
     train_ds = DelayDataset(tr_st, tr_ex, tr_tg, SEQ_LEN, HORIZON)
@@ -228,11 +228,10 @@ def main():
     test_loss, test_mae, test_rmse = evaluate(model, test_loader, criterion, laplacian, DEVICE)
 
     # Un-scale metrics back to seconds
-    """ test_mae_sec  = test_mae  * tgt_scaler.scale_[0]
+    test_mae_sec  = test_mae  * tgt_scaler.scale_[0]
     test_rmse_sec = test_rmse * tgt_scaler.scale_[0]
-    """
-    test_mae_sec  = float(np.expm1(test_mae))
-    test_rmse_sec = float(np.expm1(test_rmse))
+    """ test_mae_sec  = float(np.expm1(test_mae))
+    test_rmse_sec = float(np.expm1(test_rmse)) """
 
     print(f"\n{'─'*55}")
     print(f"Test  MAE : {test_mae_sec:>8.1f} sec")
