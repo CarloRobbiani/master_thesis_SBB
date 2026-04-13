@@ -1,306 +1,233 @@
-import torch
-from stationMATGCN import StationMATGCN
-from utils import create_df_tensors, prepare_laplacian, filter_tensors, evaluate
-from torch.utils.data import Dataset
-import sys
-import os
+"""
+Training script for StationMATGCN on train delay data.
+
+Expected parquet schema (adjust column lists to match your actual data):
+  - STATION_ID            : station identifier (str/int)
+  - DATE / TIMESTAMP      : temporal index
+  - DAILY_PLAN_OPERATIONAL_DELAY_SEC : target (seconds of delay)
+  - station feature cols  : numeric per-station operational features
+  - weather / external cols: numeric context features (temperature, precipitation, …)
+
+Run:
+    pip install torch pyarrow pandas scikit-learn scipy
+    python train_matgcn.py
+"""
 import os.path
+import sys
 sys.path.append(
     os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir)))
-import pandas as pd
+import math
+import torch
+import os
+import torch.nn as nn
 from torch.utils.data import DataLoader
-from adjacency import create_adj_matrix
+from sklearn.preprocessing import StandardScaler
 import numpy as np
+from stationMATGCN import StationMATGCN
+from utils import load_and_pivot, normalize, prepare_laplacian
+from delay_dataset import DelayDataset
 
-
-class StationMATGCNDataset(Dataset):
-
-    def __init__(self, station_tensor, external_tensor, target_tensor, T, H):
-
-        self.X = torch.tensor(station_tensor, dtype=torch.float32)
-        self.E = torch.tensor(external_tensor, dtype=torch.float32)
-        self.Y = torch.tensor(target_tensor, dtype=torch.float32)
-
-        # Mask targets for computing loss only where valid
-        self.mask = ~torch.isnan(self.Y)
-
-        self.T = T
-        self.H = H
-
-        self.length = self.X.shape[0] - T - H
-
-    def __len__(self):
-        return self.length
-
-    def __getitem__(self, idx):
-
-        x = self.X[idx : idx + self.T]          # [T, N, F]
-        e = self.E[idx : idx + self.T]          # [T, E]
-        y = self.Y[idx + self.T : idx + self.T + self.H]   # [H, N]
-
-        m = self.mask[idx + self.T : idx + self.T + self.H]
-
-        # Replace NaNs in y (only for numerical stability)
-        y = torch.nan_to_num(y, nan=0.0)
-
-        return x, e, y, m
-
-
+# ──────────────────────────────────────────────
+# 0.  CONFIGURATION
+# ──────────────────────────────────────────────
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-F = 10 # Node feature dimension
-T = 12 # History length
-E = 6 # external feature dimension
-H = 12 # Prediction horizon
-B = 64 # Batch size
-N = 10 # Number of nodes
-epochs = 50
-
-model = StationMATGCN(
-    num_station_features=F,
-    num_external_features=E,
-    hidden_dim=32,
-    K=3,
-    num_blocks=2,
-    horizon=H
-).to(device)
-
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-criterion = torch.nn.MSELoss()
-
-
-# -- Laplacian --
-station_list_path = os.path.join("data", "station_list.csv")
-laplacian = prepare_laplacian(station_list_path, device)
-
-
-# -- Load and feature Engineer Dataset --
 training_data_path = os.path.join("data", "train_data_weather.parquet")
-df = pd.read_parquet(training_data_path)
+DATA_PATH = training_data_path
 
-print(f"\n[DEBUG] Raw dataframe shape: {df.shape}")
-print(f"[DEBUG] Timestamp range: {df['OPERATION_ACTUAL_TIMESTAMP'].min()} → {df['OPERATION_ACTUAL_TIMESTAMP'].max()}")
-print(f"[DEBUG] Unique stations: {df['OPERATING_POINT_ABBREVIATION'].unique()}")
+# Column that identifies each station
+STATION_COL = "OPERATING_POINT_ABBREVIATION" 
 
-df["hour_sin"] = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 24)
-df["hour_cos"] = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 24)
-df["dow_sin"] = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
-df["dow_cos"] = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
-df = df.sort_values("OPERATION_ACTUAL_TIMESTAMP")
-df = df.reset_index(drop=True)
+# Date / time column used to sort and group
+DATE_COL    = "OPERATION_PLANNED_TIMESTAMP"                
 
+# Target variable
+TARGET_COL  = "DAILY_PLAN_OPERATIONAL_DELAY_SEC"
 
-# -- Build tensors --
-station_tensor, external_tensor, target_tensor, timestamps = create_df_tensors(df)
+# Station-level feature columns  (everything that varies per station per timestep)
+# Leave empty [] to auto-detect: all numeric cols except TARGET and EXTERNAL_COLS
+STATION_FEATURE_COLS = [
+        "EVENT_TYPE",
+        "EVENT_SERVED",
+        "PLAN_STOP_TYPE", 
+        "OPERATION_DAY_PERIOD_IDENTIFIER_COARSE",
+        'OPERATION_TRAFFIC_CATEGORY_ABBREVIATION',
+        'PLAN_FORMATION_MAXIMAL_VELOCITY',
+        "hour_sin",
+        "hour_cos",
+        "dow_sin",
+        "dow_cos"]
 
-print(f"\n[DEBUG] Tensor shapes — station: {station_tensor.shape}, external: {external_tensor.shape}, target: {target_tensor.shape}")
-print(f"[DEBUG] NaNs — station: {np.isnan(station_tensor).sum()}, external: {np.isnan(external_tensor).sum()}, target: {np.isnan(target_tensor).sum()}")
-valid_ratio = (~np.isnan(target_tensor)).mean()
-print(f"[DEBUG] Target valid ratio: {valid_ratio:.4f}")
+# External / weather feature columns  (same value for all stations at a timestep)
+EXTERNAL_COLS = [ 
+        'tre200s0', 'fkl010z1', 'fu3010z0', 'rre150z0',
+       'htoauts0', 'hto000d0']                  
 
+# ---- Model hyper-parameters ----
+HIDDEN_DIM  = 32
+K           = 3      # Chebyshev filter order
+NUM_BLOCKS  = 3
+HORIZON     = 1      # number of future steps to predict
 
-print("NaNs in station:", np.isnan(station_tensor).sum())
-print("NaNs in external:", np.isnan(external_tensor).sum())
-print("NaNs in target:", np.isnan(target_tensor).sum())
-valid_ratio = (~np.isnan(target_tensor)).mean()
-print(f"Valid ratio: {valid_ratio}")
-timestamps = pd.to_datetime(timestamps, utc=True)      # parse correctly
+# ---- Sequence lengths ----
+SEQ_LEN     = 28      # lookback window (timesteps fed to the model)
 
-valid_counts = np.sum(~np.isnan(target_tensor), axis=1)
-
-#-- Keep only stations where there are enough known data points --
-threshold = 3   # try 3–5
-keep_idx = valid_counts >= threshold
-
-station_tensor = station_tensor[keep_idx]
-external_tensor = external_tensor[keep_idx]
-target_tensor = target_tensor[keep_idx]
-timestamps = np.array(timestamps)[keep_idx]
-
-
-train_end = pd.Timestamp("2025-02-28")
-val_end   = pd.Timestamp("2025-03-30")
-
-train_station, val_station, test_station = filter_tensors(station_tensor, train_end, val_end, timestamps)
-train_ext, val_ext, test_ext = filter_tensors(external_tensor, train_end, val_end, timestamps)
-train_target, val_target, test_target = filter_tensors(target_tensor, train_end, val_end, timestamps)
-
-# Normalize station features
-station_mean = train_station.mean()
-station_std  = train_station.std() + 1e-6
-train_station = (train_station - station_mean) / station_std
-val_station   = (val_station - station_mean) / station_std
-test_station  = (test_station - station_mean) / station_std
-
-# Normalize external features
-ext_mean = train_ext.mean(axis=0)
-ext_std  = train_ext.std(axis=0) + 1e-6
-train_ext = (train_ext - ext_mean) / ext_std
-val_ext   = (val_ext   - ext_mean) / ext_std
-test_ext  = (test_ext  - ext_mean) / ext_std
+# ---- Training ----
+EPOCHS      = 30
+BATCH_SIZE  = 32
+LR          = 1e-3
+TRAIN_RATIO = 0.8
+DEVICE      = device
 
 
-# Normalize if RMSE 0.3 its very good
-mean = np.nanmean(train_target)
-std = np.nanstd(train_target) + 1e-6
-train_target = (train_target - mean) / std
-val_target   = (val_target - mean) / std
-test_target  = (test_target - mean) / std
+# ──────────────────────────────────────────────
+# 3.  TRAINING LOOP
+# ──────────────────────────────────────────────
 
-print(f"\n[DEBUG] Target normalisation — mean: {mean:.4f}  std: {std:.4f}")
-print(f"[DEBUG] Normalised train_target — min: {np.nanmin(train_target):.4f}  max: {np.nanmax(train_target):.4f}")
-
-
-# --- Datasets and Dataloader ---
-train_dataset = StationMATGCNDataset(
-    train_station, train_ext, train_target, T, H
-)
-
-val_dataset = StationMATGCNDataset(
-    val_station, val_ext, val_target, T, H
-)
-
-test_dataset = StationMATGCNDataset(
-    test_station, test_ext, test_target, T, H
-)
-
-# Create different dataloaders
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-
-val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-
-test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
-
-
-# DEBUG: check a single batch comes out with the right shapes before training
-print("\n[DEBUG] Checking a single train batch...")
-_x, _e, _y, _m = next(iter(train_loader))
-print(f"  x: {_x.shape}  e: {_e.shape}  y: {_y.shape}  m: {_m.shape}")
-print(f"  x NaNs: {_x.isnan().sum().item()}  e NaNs: {_e.isnan().sum().item()}  y NaNs: {_y.isnan().sum().item()}")
-print(f"  mask True fraction: {_m.float().mean().item():.3f}")
-del _x, _e, _y, _m
-
-
-# --- Training Loop ---
-train_losses = []
-val_losses = []
-
-for epoch in range(epochs):
-
+def train_epoch(model, loader, optimizer, criterion, laplacian, device):
     model.train()
-
-    running_loss = 0
-    total_samples = 0
-
-    for batch_idx, (x, e, y, m) in enumerate(train_loader):
-
-        x = x.to(device)
-        e = e.to(device)
-        y = y.to(device)
-        y = y.permute(0, 2, 1)  # [B, N, H]
-        m = m.to(device)
-        m = m.permute(0, 2, 1)   # [B, N, H]
-
-        
-
+    total_loss = 0.0
+    for x, ext, y in loader:
+        x, ext, y = x.to(device), ext.to(device), y.to(device)
+        L = laplacian.to(device)
 
         optimizer.zero_grad()
-        pred = model(x, e, laplacian)
-        #print(pred.mean().item(), pred.std().item())
-
-        if epoch == 0 and batch_idx == 0:
-            print(f"\n[DEBUG epoch=1 batch=0] pred shape: {pred.shape}")
-            print(f"  pred  — mean: {pred.mean().item():.4f}  std: {pred.std().item():.4f}  NaN: {pred.isnan().sum().item()}  Inf: {pred.isinf().sum().item()}")
-            print(f"  y     — mean: {y.mean().item():.4f}  std: {y.std().item():.4f}")
-            print(f"  mask coverage: {m.float().mean().item():.3f}")
- 
-        if pred.isnan().any() or pred.isinf().any():
-            print(f"[DEBUG] WARNING: NaN/Inf in pred at epoch {epoch+1}!")
-        
-
-        # Masked loss
-        loss = ((pred - y) ** 2) * m
-        loss = loss.sum() / (m.sum() + 1e-6)
-
-        #loss = criterion(pred, y)
-        #loss = torch.nn.functional.smooth_l1_loss(pred, y)
-
-        if torch.isnan(loss) or torch.isinf(loss):
-            print(f"[DEBUG] WARNING: loss is {loss.item()} at epoch {epoch+1} — skipping update")
-            continue
-
+        # model output: (B, N, HORIZON)
+        pred = model(x, ext, L)             # → (B, N, HORIZON)
+        # collapse horizon dim to match y (B, N)
+        pred = pred.mean(dim=-1)            # (B, N)
+        loss = criterion(pred, y)
         loss.backward()
-
-        if batch_idx == 0 and epoch % 10 == 0:
-            total_norm = sum(p.grad.data.norm(2).item() ** 2 for p in model.parameters() if p.grad is not None) ** 0.5
-            print(f"[DEBUG epoch={epoch+1}] Grad norm (before clip): {total_norm:.4f}")
- 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+        nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         optimizer.step()
+        total_loss += loss.item() * x.size(0)
+    return total_loss / len(loader.dataset)
 
-        batch_size = x.shape[0]
 
-        running_loss += loss.item() * batch_size
-        total_samples += batch_size
+@torch.no_grad()
+def evaluate(model, loader, criterion, laplacian, device):
+    model.eval()
+    total_loss = 0.0
+    all_pred, all_true = [], []
+    for x, ext, y in loader:
+        x, ext, y = x.to(device), ext.to(device), y.to(device)
+        L = laplacian.to(device)
+        pred = model(x, ext, L).mean(dim=-1)
+        total_loss += criterion(pred, y).item() * x.size(0)
+        all_pred.append(pred.cpu())
+        all_true.append(y.cpu())
+    avg_loss = total_loss / len(loader.dataset)
+    preds = torch.cat(all_pred)
+    trues = torch.cat(all_true)
+    mae  = (preds - trues).abs().mean().item()
+    rmse = ((preds - trues) ** 2).mean().sqrt().item()
+    return avg_loss, mae, rmse
 
-    train_loss = running_loss / total_samples
 
-    val_loss, val_rmse = evaluate(
-        model,
-        val_loader,
-        laplacian,
-        criterion,
-        device
+# ──────────────────────────────────────────────
+# 4.  MAIN
+# ──────────────────────────────────────────────
+
+def main():
+    print(f"Device: {DEVICE}\n")
+
+    # ── load data ────────────────────────────────────────────────────
+    print("Loading data …")
+    station_arr, external_arr, target_arr, stations = load_and_pivot(DATA_PATH,
+                                                                    STATION_FEATURE_COLS,
+                                                                    EXTERNAL_COLS)
+    N = len(stations)
+    T = len(station_arr)
+    F = station_arr.shape[-1]   # includes target as last feature
+    E = external_arr.shape[-1]
+
+    # ── train / val / test split (temporal) ──────────────────────────
+    t_train = int(T * TRAIN_RATIO)
+    t_val   = int(T * (TRAIN_RATIO + (1 - TRAIN_RATIO) / 2))
+
+    tr_st = station_arr [:t_train];  tr_ex = external_arr[:t_train];  tr_tg = target_arr[:t_train]
+    va_st = station_arr [t_train:t_val]; va_ex = external_arr[t_train:t_val]; va_tg = target_arr[t_train:t_val]
+    te_st = station_arr [t_val:];  te_ex = external_arr[t_val:];  te_tg = target_arr[t_val:]
+
+    print(f"\nSplit sizes → train: {len(tr_st)}, val: {len(va_st)}, test: {len(te_st)}")
+
+    # ── normalize ─────────────────────────────────────────────────────
+    tr_st, va_st, te_st, feat_scaler = normalize(tr_st, va_st, te_st)
+
+    #  normalize targets using the log scaler
+    # (last column of station_arr is TARGET_COL)
+    tgt_scaler = StandardScaler()
+    tgt_scaler.fit(tr_tg.reshape(-1, 1))
+    def scale_tgt(a): return tgt_scaler.transform(a.reshape(-1, 1)).reshape(a.shape)
+    tr_tg, va_tg, te_tg = scale_tgt(tr_tg), scale_tgt(va_tg), scale_tgt(te_tg)
+
+    """ tr_tg = np.log1p(np.clip(tr_tg, 0, None))
+    va_tg = np.log1p(np.clip(va_tg, 0, None))
+    te_tg = np.log1p(np.clip(te_tg, 0, None)) """
+
+    # ── datasets & loaders ───────────────────────────────────────────
+    train_ds = DelayDataset(tr_st, tr_ex, tr_tg, SEQ_LEN, HORIZON)
+    val_ds   = DelayDataset(va_st, va_ex, va_tg, SEQ_LEN, HORIZON)
+    test_ds  = DelayDataset(te_st, te_ex, te_tg, SEQ_LEN, HORIZON)
+
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,  num_workers=0)
+    val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+    test_loader  = DataLoader(test_ds,  batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+
+    # ── graph Laplacian ───────────────────────────────────────────────
+    station_list_path = os.path.join("data", "station_list.csv")
+    laplacian = prepare_laplacian(station_list_path, device)
+
+    # ── model ─────────────────────────────────────────────────────────
+    # Station features: F (includes target as last col)
+    # External features: E
+    model = StationMATGCN(
+        num_station_features  = F,
+        num_external_features = E,
+        hidden_dim = HIDDEN_DIM,
+        K          = K,
+        num_blocks = NUM_BLOCKS,
+        horizon    = HORIZON,
+    ).to(DEVICE)
+
+    print(f"\nModel parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=5 #verbose=True
     )
-    #maybe include early stopping
-    """ if val_loss < best_val:
-        best_val = val_loss
-        counter = 0
-        torch.save(model.state_dict(), "best_model.pt")
+    criterion = nn.HuberLoss()   # robust to outlier delays
 
-    else:
-        counter += 1
+    # ── training ──────────────────────────────────────────────────────
+    best_val_loss = math.inf
+    print(f"\n{'Epoch':>5}  {'Train Loss':>12}  {'Val Loss':>10}  {'Val MAE':>9}  {'Val RMSE':>10}")
+    print("-" * 55)
 
-    if counter >= patience:
-        print("Early stopping triggered")
-        break """
+    for epoch in range(1, EPOCHS + 1):
+        train_loss = train_epoch(model, train_loader, optimizer, criterion, laplacian, DEVICE)
+        val_loss, val_mae, val_rmse = evaluate(model, val_loader, criterion, laplacian, DEVICE)
+        scheduler.step(val_loss)
 
-    
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), "best_matgcn.pt")
 
-    train_losses.append(train_loss)
-    val_losses.append(val_loss)
+        print(f"{epoch:>5}  {train_loss:>12.4f}  {val_loss:>10.4f}  {val_mae:>9.2f}  {val_rmse:>10.2f}")
 
-    print(
-        f"Epoch {epoch+1}/{epochs} | "
-        f"Train Loss: {train_loss:.4f} | "
-        f"Val Loss: {val_loss:.4f} | "
-        f"Val RMSE: {val_rmse:.4f} (Normalized: {val_rmse * std})"
-    )
+    # ── test evaluation ───────────────────────────────────────────────
+    model.load_state_dict(torch.load("best_matgcn.pt", map_location=DEVICE))
+    test_loss, test_mae, test_rmse = evaluate(model, test_loader, criterion, laplacian, DEVICE)
 
-torch.save(model.state_dict(), "matgcn_model.pt")
+    # Un-scale metrics back to seconds
+    test_mae_sec  = test_mae  * tgt_scaler.scale_[0]
+    test_rmse_sec = test_rmse * tgt_scaler.scale_[0]
+    """ test_mae_sec  = float(np.expm1(test_mae))
+    test_rmse_sec = float(np.expm1(test_rmse)) """
 
-test_loss, test_rmse = evaluate(
-    model,
-    test_loader,
-    laplacian,
-    criterion,
-    device
-)
-
-print(f"Test Loss: {test_loss:.4f} | Test RMSE: {test_rmse:.4f} (Normalized: {test_rmse * std})")
+    print(f"\n{'─'*55}")
+    print(f"Test  MAE : {test_mae_sec:>8.1f} sec")
+    print(f"Test RMSE : {test_rmse_sec:>8.1f} sec")
+    print("Best model saved to best_matgcn.pt")
 
 
-
-# Plot curves:
-
-import matplotlib.pyplot as plt
-
-plt.plot(train_losses, label="Train Loss")
-plt.plot(val_losses, label="Validation Loss")
-
-plt.xlabel("Epoch")
-plt.ylabel("Loss")
-plt.legend()
-plt.title("Training Curve")
-
-plt.show()
+if __name__ == "__main__":
+    main()

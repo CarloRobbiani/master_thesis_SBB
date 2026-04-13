@@ -120,16 +120,50 @@ def preprocess_train(df, target_column="OPERATIONAL_PUNCTUAL"):
     # 5. Handle missing values
     # -----------------------
     print("handling missing values...")
-    df = df.fillna(0)
 
     # -----------------------
     # 6. Split X / y
     # -----------------------
-    X = df.drop(columns=[target_column])
+    print("Splitting features...")
+    FEATURE_COLS = [
+        "EVENT_TYPE",
+        "EVENT_SERVED",
+        "PLAN_STOP_TYPE", 
+        "OPERATION_DAY_PERIOD_IDENTIFIER_COARSE",
+        'OPERATION_TRAFFIC_CATEGORY_ABBREVIATION',
+        'PLAN_FORMATION_MAXIMAL_VELOCITY',
+        "hour_sin",
+        "hour_cos",
+        "dow_sin",
+        "dow_cos",
+        'tre200s0', 'fkl010z1', 'fu3010z0', 'rre150z0',
+        'htoauts0', 'hto000d0']
+    X = df[FEATURE_COLS]
     y = df[target_column]
     print("finished preprocessing...")
 
     return X, y
+
+def time_split(X, y, train_size=0.7, val_size=0.15):
+    """
+    Generates a time split for the XGBoost dataframe.
+    X,y: time sorted dataframe splits
+    """
+    n = len(X)
+    
+    train_end = int(n * train_size)
+    val_end = int(n * (train_size + val_size))
+    
+    X_train = X.iloc[:train_end]
+    y_train = y.iloc[:train_end]
+    
+    X_val = X.iloc[train_end:val_end]
+    y_val = y.iloc[train_end:val_end]
+    
+    X_test = X.iloc[val_end:]
+    y_test = y.iloc[val_end:]
+    
+    return X_train, X_val, X_test, y_train, y_val, y_test
 
 
 if __name__ == "__main__":

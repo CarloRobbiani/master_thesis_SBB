@@ -7,15 +7,16 @@ class XGBoostBaseline:
     def __init__(self, params=None):
         self.params = params or {
             "objective": "reg:squarederror",
-            "n_estimators": 200,
-            "max_depth": 6,
+            "n_estimators": 500,
+            "max_depth": 10,
             "learning_rate": 0.05,
             "subsample": 0.8,
             "colsample_bytree": 0.8
         }
         self.models = []
+        
 
-    def fit(self, X, Y):
+    def fit(self, X, Y,  X_val=None, Y_val=None):
         # Accept DataFrame or numpy array
         if isinstance(X, pd.DataFrame):
             X_flat = X.values
@@ -33,15 +34,63 @@ class XGBoostBaseline:
         else:
             Y_flat = Y.reshape(Y.shape[0] * Y.shape[1], -1) if len(Y.shape) > 1 else Y[:, None]
 
+
+        # ---- Validation handling ----
+        if X_val is not None and Y_val is not None:
+            if isinstance(X_val, pd.DataFrame):
+                X_val_flat = X_val.values
+            else:
+                X_val_flat = X_val.reshape(X_val.shape[0] * n_nodes, -1) if len(X_val.shape) > 2 else X_val
+
+            if isinstance(Y_val, (pd.Series, pd.DataFrame)):
+                Y_val_flat = Y_val.values
+                if Y_val_flat.ndim == 1:
+                    Y_val_flat = Y_val_flat[:, None]
+            else:
+                Y_val_flat = Y_val.reshape(Y_val.shape[0] * Y_val.shape[1], -1) if len(Y_val.shape) > 1 else Y_val[:, None]
+        else:
+            X_val_flat, Y_val_flat = None, None
+
         horizon = Y_flat.shape[1]
         self.models = []
+        self.eval_results = []
 
         for h in range(horizon):
             model = xgb.XGBRegressor(**self.params)
-            model.fit(X_flat, Y_flat[:, h])
+            if X_val_flat is not None:
+                eval_set = [(X_flat, Y_flat[:, h]), (X_val_flat, Y_val_flat[:, h])]
+            else:
+                eval_set = [(X_flat, Y_flat[:, h])]
+
+            model.fit(X_flat, Y_flat[:, h], eval_set=eval_set)
             self.models.append(model)
+            self.eval_results.append(model.evals_result())
 
         return self
+    
+    
+
+    def plot_loss(self, horizon_step=0):
+        import matplotlib.pyplot as plt
+        results = self.eval_results[horizon_step]
+
+        train_loss = results['validation_0']['rmse']
+
+        plt.figure()
+        plt.plot(train_loss, label='Train Loss')
+
+        if 'validation_1' in results:
+            val_loss = results['validation_1']['rmse']
+            plt.plot(val_loss, label='Validation Loss')
+
+        plt.xlabel('Iterations')
+        plt.ylabel('RMSE')
+        plt.title(f'Loss Curve (Horizon step {horizon_step})')
+        plt.legend()
+        plt.grid()
+        plt.show()
+
+        plt.savefig("images\RMSE_curves_XGboost.png")
 
     def predict(self, X):
         if isinstance(X, pd.DataFrame):
