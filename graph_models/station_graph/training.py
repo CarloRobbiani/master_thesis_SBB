@@ -28,7 +28,7 @@ from utils import load_and_pivot, normalize, prepare_laplacian
 from delay_dataset import DelayDataset
 
 # ──────────────────────────────────────────────
-# 0.  CONFIGURATION  (edit these)
+# 0.  CONFIGURATION
 # ──────────────────────────────────────────────
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 training_data_path = os.path.join("data", "train_data_weather.parquet")
@@ -65,7 +65,7 @@ EXTERNAL_COLS = [
 # ---- Model hyper-parameters ----
 HIDDEN_DIM  = 32
 K           = 3      # Chebyshev filter order
-NUM_BLOCKS  = 2
+NUM_BLOCKS  = 3
 HORIZON     = 1      # number of future steps to predict
 
 # ---- Sequence lengths ----
@@ -78,16 +78,6 @@ LR          = 1e-3
 TRAIN_RATIO = 0.8
 DEVICE      = device
 
-
-# ──────────────────────────────────────────────
-# 1.  DATA LOADING & PREPARATION
-# ──────────────────────────────────────────────
-
-
-
-# ──────────────────────────────────────────────
-# 2.  DATASET
-# ──────────────────────────────────────────────
 
 # ──────────────────────────────────────────────
 # 3.  TRAINING LOOP
