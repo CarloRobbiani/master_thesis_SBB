@@ -19,6 +19,9 @@ df["hour_cos"] = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 2
 df["dow_sin"] = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
 df["dow_cos"] = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
 
+df["hto000d0"] = df["hto000d0"].fillna(0)
+df = df.drop(["date", "days"], axis=1)
+
 # Reduce data types to save space
 for col in df.select_dtypes(include=["int64", "float64"]).columns:
     df[col] = pd.to_numeric(df[col], downcast="float")
@@ -27,12 +30,14 @@ target_col = 'DAILY_PLAN_OPERATIONAL_DELAY_SEC'
 X,Y = preprocess_train(df, target_column=target_col)
 
 X_train, X_val, X_test, y_train, y_val, y_test = time_split(X, Y)
-my_xgboost.fit(X, Y)
+my_xgboost.fit(X, Y, X_val, y_val)
 
-prediction = my_xgboost.predict(X)
+prediction = my_xgboost.predict(X_test)
 
-mae_error = mean_absolute_error(Y,prediction)
-rmse_error = root_mean_squared_error(Y, prediction)
+my_xgboost.plot_loss()
+
+mae_error = mean_absolute_error(y_test,prediction)
+rmse_error = root_mean_squared_error(y_test, prediction)
 print(f"Mean absolute error: {mae_error}")
 print(f"Root mean squared error: {rmse_error}")
 
