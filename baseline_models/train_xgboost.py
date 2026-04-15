@@ -8,6 +8,7 @@ sys.path.append(
     os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir)))
 from data_preprocessing import preprocess_train, time_split
 my_xgboost = XGBoostBaseline()
+import matplotlib.pyplot as plt
 
 
 df = pd.read_parquet("data/train_data_weather.parquet")
@@ -35,6 +36,13 @@ my_xgboost.fit(X, Y, X_val, y_val)
 prediction = my_xgboost.predict(X_test)
 
 my_xgboost.plot_loss()
+
+val_end = int(len(X) * (0.7 + 0.15))
+actual_timestamps = df.iloc[val_end:]["OPERATION_PLANNED_TIMESTAMP"]
+plt.plot(actual_timestamps, y_test)
+plt.plot(actual_timestamps, prediction)
+plt.savefig("images/Xgboost_comparison.png")
+plt.show()
 
 mae_error = mean_absolute_error(y_test,prediction)
 rmse_error = root_mean_squared_error(y_test, prediction)
