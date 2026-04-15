@@ -7,6 +7,7 @@ from sklearn.preprocessing import LabelEncoder
 def convert_to_parquet(filepath: str):
     print("starting conversion...")
     df = pd.read_csv(filepath)
+    print(df["OPERATIONAL_DAY"].max())
     df.to_parquet("data/train_data.parquet")
     print("conversion finished!")
 
@@ -27,6 +28,8 @@ def filter_stations(station_list = "data\station_list.csv", file_path = "data/tr
     stations = station_df.iloc[1].tolist() # second row is list of station abbreviations
     train_df = train_df[train_df["OPERATING_POINT_ABBREVIATION"].isin(stations)]
 
+    print(train_df["OPERATIONAL_DAY"].max())
+
     train_df.to_parquet("data/train_data.parquet")
 
 def filter_parquet_file(filepath: str):
@@ -43,7 +46,7 @@ def filter_parquet_file(filepath: str):
 
         mask = pc.and_(
             pc.greater_equal(table['OPERATIONAL_DAY'], '2025-01-01'),
-            pc.less_equal(table['OPERATIONAL_DAY'], '2025-06-01')
+            pc.less_equal(table['OPERATIONAL_DAY'], '2025-12-31')
         )
 
         filtered = table.filter(mask)

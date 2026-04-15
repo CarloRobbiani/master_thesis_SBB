@@ -2,3 +2,5 @@ GTFSR_20260217100801.pb
 stop_times.txt
 data/
 results.txt
+simulator\routes.txt
+CONFIG.txt

@@ -336,6 +336,7 @@ def load_and_pivot(path, STATION_FEATURE_COLS, EXTERNAL_COLS):
       - Return (station_features, external_features, station_ids, timestamps)
     """
     df = pd.read_parquet(path)
+    df = df[df["TRAIN_NUMBER"].isin([6010, 6011])] # only take train routes between Neuchatel and Biel
     STATION_COL = "OPERATING_POINT_ABBREVIATION"
     DATE_COL = "OPERATION_PLANNED_TIMESTAMP"
     TARGET_COL = "DAILY_PLAN_OPERATIONAL_DELAY_SEC"

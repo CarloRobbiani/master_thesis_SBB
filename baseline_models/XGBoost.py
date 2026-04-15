@@ -88,9 +88,8 @@ class XGBoostBaseline:
         plt.title(f'Loss Curve (Horizon step {horizon_step})')
         plt.legend()
         plt.grid()
-        plt.show()
-
         plt.savefig("images\RMSE_curves_XGboost.png")
+        plt.show()
 
     def predict(self, X):
         if isinstance(X, pd.DataFrame):

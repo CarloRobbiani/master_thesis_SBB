@@ -60,7 +60,7 @@ def prepare_neuchatel():
     #filter date
     df['reference_timestamp'] = pd.to_datetime(df['reference_timestamp'], format="%d.%m.%Y %H:%M")
     df['date'] = df['reference_timestamp']
-    mask = (df['date'] >= '2025-01-01') & (df['date'] <= '2025-06-01')
+    mask = (df['date'] >= '2025-01-01') & (df['date'] <= '2025-12-31')
     filtered_df = df[mask]
 
     filtered_df = filtered_df[cols_to_keep]
@@ -74,7 +74,7 @@ def prepare_neuchatel():
 
     neu_snow['reference_timestamp'] = pd.to_datetime(neu_snow['reference_timestamp'], format="%d.%m.%Y %H:%M")
     neu_snow['date'] = neu_snow['reference_timestamp']
-    mask_snow = (neu_snow['date'] >= '2025-01-01') & (neu_snow['date'] <= '2025-06-01')
+    mask_snow = (neu_snow['date'] >= '2025-01-01') & (neu_snow['date'] <= '2025-12-31')
     filtered_df_snow = neu_snow[mask_snow]
     filtered_neu_snow = filtered_df_snow[cols_to_keep]
     filtered_neu_snow["days"] = filtered_neu_snow["date"].dt.date
@@ -94,7 +94,7 @@ def prepare_grenchen():
     #filter date
     df['reference_timestamp'] = pd.to_datetime(df['reference_timestamp'], format="%d.%m.%Y %H:%M")
     df['date'] = df['reference_timestamp']
-    mask = (df['date'] >= '2025-01-01') & (df['date'] <= '2025-06-01')
+    mask = (df['date'] >= '2025-01-01') & (df['date'] <= '2025-12-31')
     filtered_df = df[mask]
 
     filtered_df = filtered_df[cols_to_keep]

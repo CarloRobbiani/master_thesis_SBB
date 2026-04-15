@@ -12,6 +12,10 @@ my_xgboost = XGBoostBaseline()
 
 df = pd.read_parquet("data/train_data_weather.parquet")
 
+df = df[df["TRAIN_NUMBER"].isin([6010, 6011])]
+
+print(df["OPERATIONAL_DAY"].max())
+
 df = df.sort_values("OPERATION_PLANNED_TIMESTAMP")
 
 df["hour_sin"] = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 24)

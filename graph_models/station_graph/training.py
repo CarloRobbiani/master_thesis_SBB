@@ -65,7 +65,7 @@ EXTERNAL_COLS = [
 # ---- Model hyper-parameters ----
 HIDDEN_DIM  = 32
 K           = 3      # Chebyshev filter order
-NUM_BLOCKS  = 3
+NUM_BLOCKS  = 2
 HORIZON     = 1      # number of future steps to predict
 
 # ---- Sequence lengths ----
