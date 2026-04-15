@@ -8,8 +8,8 @@ class XGBoostBaseline:
         self.params = params or {
             "objective": "reg:squarederror",
             "n_estimators": 500,
-            "max_depth": 10,
-            "learning_rate": 0.05,
+            "max_depth": 15,
+            "learning_rate": 0.1,
             "subsample": 0.8,
             "colsample_bytree": 0.8
         }

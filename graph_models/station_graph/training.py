@@ -217,6 +217,7 @@ def main():
     model.load_state_dict(torch.load("best_matgcn.pt", map_location=DEVICE))
     test_loss, test_mae, test_rmse = evaluate(model, test_loader, criterion, laplacian, DEVICE)
 
+
     # Un-scale metrics back to seconds
     test_mae_sec  = test_mae  * tgt_scaler.scale_[0]
     test_rmse_sec = test_rmse * tgt_scaler.scale_[0]
