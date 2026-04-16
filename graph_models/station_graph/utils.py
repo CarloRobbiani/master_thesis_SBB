@@ -68,7 +68,7 @@ class TemporalAttention(nn.Module):
         return torch.einsum("btns,bsnd->btnd", attn, V)
 
 class STBlock(nn.Module):
-    def __init__(self, in_channels, hidden_dim, K):
+    def __init__(self, in_channels, hidden_dim, K, dropout=0.1):
         super().__init__()
 
         self.feature_att = FeatureAttention(in_channels)
@@ -83,6 +83,7 @@ class STBlock(nn.Module):
             padding=(1, 0)
         )
 
+        self.dropout = nn.Dropout(p=dropout)
         self.norm = nn.LayerNorm(hidden_dim)
 
     def forward(self, x, laplacian):
@@ -97,10 +98,11 @@ class STBlock(nn.Module):
 
         x = x.permute(0, 3, 1, 2)
         x = self.temporal_conv(x)
+        x = self.dropout(x)
         x = x.permute(0, 2, 3, 1)
 
         return self.norm(x + residual)
-        #return self.norm(x)
+
     
 def compute_laplacian(adj):
     D = torch.diag(torch.sum(adj, dim=1))
@@ -146,133 +148,6 @@ def filter_tensors(data_tensor: torch.tensor, train_end, val_end, timestamps):
     test = data_tensor[test_idx]
 
     return train, val, test
-    
-
-def create_df_tensors(df: pd.DataFrame):
-    """
-    Creates tensors from the train Dataframe
-    Returns: station_tensor, external_tensor, target_tensor, timestamps
-    """
-    # Features the stations should have
-    station_feature_cols = [
-        "EVENT_TYPE",
-        "EVENT_SERVED",
-        "PLAN_STOP_TYPE", 
-        "OPERATION_DAY_PERIOD_IDENTIFIER_COARSE",
-        'OPERATION_TRAFFIC_CATEGORY_ABBREVIATION',
-        'PLAN_FORMATION_MAXIMAL_VELOCITY',
-        "hour_sin",
-        "hour_cos",
-        "dow_sin",
-        "dow_cos"
-    ]
-
-    # Features for the external tensor
-    external_cols = [
-        'tre200s0', 'fkl010z1', 'fu3010z0', 'rre150z0',
-       'htoauts0', 'hto000d0'
-    ]
-
-    target_col = "DAILY_PLAN_OPERATIONAL_DELAY_SEC"
-
-    # --- Sort ---
-    df = df.sort_values(["OPERATION_ACTUAL_TIMESTAMP", "OPERATING_POINT_ABBREVIATION"])
-
-    # DEBUG: check which stations in the data match your hardcoded list
-    data_stations = set(df["OPERATING_POINT_ABBREVIATION"].unique())
-    expected_stations = {"BI","TUE","TWN","LIG","NV","LD","CRNE","CORN","SBLB","NE"}
-    unrecognised = data_stations - expected_stations
-    missing_from_data = expected_stations - data_stations
-    if unrecognised:
-        print(f"  WARNING: stations in data but not in hardcoded list (will be ignored): {unrecognised}")
-    if missing_from_data:
-        print(f"  WARNING: stations in hardcoded list but not in data (always NaN): {missing_from_data}")
-
-
-    # ---  Convert Boolean to int ---
-    print("converting boolean to int...")
-    df["EVENT_SERVED"] = df["EVENT_SERVED"].astype(int)
-
-
-    # --- Categorical encoding ---
-    print("categoircal encoding...")
-    exclude_cols = ["OPERATING_POINT_ABBREVIATION", "OPERATION_ACTUAL_TIMESTAMP"]
-
-    cat_cols = [
-        col for col in df.select_dtypes(include="object").columns
-        if col not in exclude_cols
-    ]
-
-    for col in cat_cols:
-        df[col] = df[col].astype("category").cat.codes
-
-    # --- Handle missing values ---
-    print("handling missing values...")
-    #df = df.fillna(0)
-    print("\n[DEBUG create_df_tensors] --- Dropping rows with NaN target ---")
-    n_before = len(df)
-    df = df.dropna(subset=[target_col])
-    n_after = len(df)
-    print(f"  Dropped {n_before - n_after} rows  ({n_before} reduced to {n_after})")
-
-    # --- Create consistent indices ---
-    timestamps = sorted(df["OPERATION_ACTUAL_TIMESTAMP"].unique())
-    stations = ["BI","TUE","TWN","LIG","NV","LD","CRNE","CORN","SBLB","NE"]
-
-    timestamp_to_idx = {t: i for i, t in enumerate(timestamps)}
-    station_to_idx = {s: i for i, s in enumerate(stations)}
-
-    T_total = len(timestamps)
-    N = len(stations)
-
-    F = len(station_feature_cols)
-    E = len(external_cols)
-
-    # ---  Initialize tensors ---
-    station_tensor = np.full((T_total, N, F), np.nan, dtype=np.float32)
-    target_tensor = np.full((T_total, N), np.nan, dtype=np.float32)
-    external_tensor = np.full((T_total, E), np.nan, dtype=np.float32)
-
-    # --- Fill tensors safely ---
-    for _, row in df.iterrows():
-
-        t = timestamp_to_idx[row["OPERATION_ACTUAL_TIMESTAMP"]]
-        n = station_to_idx[row["OPERATING_POINT_ABBREVIATION"]]
-
-        # Node features
-        station_tensor[t, n, :] = row[station_feature_cols].values
-
-        # Target
-        target_tensor[t, n] = row[target_col]
-        #target_tensor = np.nan_to_num(target_tensor, nan=0.0)
-
-        # External (same for all stations)
-        if np.isnan(external_tensor[t, 0]):
-            external_tensor[t, :] = row[external_cols].values
-
-
-    ext_missing_before = np.isnan(external_tensor[:, 0]).sum()
-    print(f"\n[DEBUG create_df_tensors] --- Before forward-fill ---")
-    print(f"  Timesteps with no external data: {ext_missing_before} / {T_total}")
-    print(f"  NaNs — station: {np.isnan(station_tensor).sum()}  "
-          f"external: {np.isnan(external_tensor).sum()}  "
-          f"target: {np.isnan(target_tensor).sum()}")
-    
-    # forward fill over time
-    for f in range(E):
-        series = pd.Series(external_tensor[:, f])
-        external_tensor[:, f] = series.ffill().fillna(0)
-
-    for n in range(N):
-        for f in range(F):
-            series = pd.Series(station_tensor[:, n, f])
-            station_tensor[:, n, f] = series.ffill().fillna(0)
-
-    for n in range(N):
-        series = pd.Series(target_tensor[:, n])
-        target_tensor[:, n] = series.ffill(limit=3)
-
-    return station_tensor, external_tensor, target_tensor, timestamps
 
 
 def evaluate(model, dataloader, laplacian, criterion, device):
@@ -298,9 +173,6 @@ def evaluate(model, dataloader, laplacian, criterion, device):
 
             pred = model(x, e, laplacian)
 
-            #loss = criterion(pred, y)
-            #loss = torch.nn.functional.smooth_l1_loss(pred, y)
-            # Masked loss
             loss = ((pred - y) ** 2) * m
             loss = loss.sum() / (m.sum() + 1e-6)
 
@@ -309,11 +181,9 @@ def evaluate(model, dataloader, laplacian, criterion, device):
             total_loss += loss.item() * batch_size
             total_samples += batch_size
 
-            # Collect ONLY valid values for RMSE
             all_preds.append(pred[m].cpu())
             all_targets.append(y[m].cpu())
 
-    # Concatenate all batches
     all_preds = torch.cat(all_preds).cpu().numpy()
     all_targets = torch.cat(all_targets).cpu().numpy()
 
@@ -327,95 +197,147 @@ def evaluate(model, dataloader, laplacian, criterion, device):
 
 def load_and_pivot(path, STATION_FEATURE_COLS, EXTERNAL_COLS):
     """
-    Load the parquet file and return a 3-D array of shape (T, N, F)
-    plus a separate external array (T, E) and a list of station ids.
- 
-    Strategy:
-      - Sort by DATE, then STATION_ID
-      - Pivot so rows = timesteps, columns = stations
-      - Return (station_features, external_features, station_ids, timestamps)
+    Load the parquet file and return arrays suitable for the MATGCN model.
+
+    Returns:
+        station_arr  : np.ndarray of shape (T, N, F)
+        external_arr : np.ndarray of shape (T, E)
+        target_arr   : np.ndarray of shape (T, N)
+        stations     : list of station ids (length N)
     """
+  
     df = pd.read_parquet(path)
+
     STATION_COL = "OPERATING_POINT_ABBREVIATION"
-    DATE_COL = "OPERATION_PLANNED_TIMESTAMP"
-    TARGET_COL = "DAILY_PLAN_OPERATIONAL_DELAY_SEC"
-    # Add temporal encoded time features
+    DATE_COL    = "OPERATION_PLANNED_TIMESTAMP"
+    TARGET_COL  = "DAILY_PLAN_OPERATIONAL_DELAY_SEC"
+
+    # -- temporal encoding --
     df["hour_sin"] = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 24)
     df["hour_cos"] = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 24)
-    df["dow_sin"] = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
-    df["dow_cos"] = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
+    df["dow_sin"]  = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
+    df["dow_cos"]  = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
     df["hto000d0"] = df["hto000d0"].fillna(0)
     df = df.drop(["date", "days"], axis=1)
     df = df.sort_values([DATE_COL, STATION_COL]).reset_index(drop=True)
-    exclude_cols = ["OPERATION_ACTUAL_TIMESTAMP", TARGET_COL, DATE_COL]
 
+    # -- categorical encoding --
+    exclude_cols = ["OPERATION_ACTUAL_TIMESTAMP", TARGET_COL, DATE_COL]
     cat_cols = [
         col for col in df.select_dtypes(include="object").columns
         if col not in exclude_cols
     ]
-
     for col in cat_cols:
         df[col] = df[col].astype("category").cat.codes
 
-    stations   = sorted(df[STATION_COL].unique())
-    timestamps = sorted(df[DATE_COL].unique())
+    # -- STEP 1: aggregate arrivals and departures separately --
+
+    def _mode(s):
+        m = s.mode()
+        return m.iloc[0] if len(m) else np.nan
+
+    # Build per-event-type aggregation for features
+    cat_station_cols = [
+        c for c in STATION_FEATURE_COLS
+        if df[c].dtype in (object, "category") or str(df[c].dtype) == "int8"
+           or df[c].nunique() < 20
+    ]
+    num_station_cols = [c for c in STATION_FEATURE_COLS if c not in cat_station_cols]
+
+    agg_dict_feat = {c: _mode for c in cat_station_cols}
+    agg_dict_feat.update({c: "mean" for c in num_station_cols})
+    agg_dict_feat.update({c: "first" for c in EXTERNAL_COLS})
+
+    # Aggregate departures
+    dep_df = df[df["EVENT_TYPE"] == 0] if df["EVENT_TYPE"].dtype != object \
+             else df[df["EVENT_TYPE"] == "departure"]
+    # compute target mean per event type separately.
+
+    # Re-derive departure/arrival targets from the encoded df
+    grp = df.groupby([DATE_COL, STATION_COL])
+
+    # Target: mean departure delay per (timestamp, station)
+    dep_code = df["EVENT_TYPE"].unique()  # after encoding, find which code = departure
+    # Since encoding is alphabetical: 'arrival'=0, 'departure'=1
+    dep_target = (df[df["EVENT_TYPE"] == 1]          # 1 = departure after alpha encoding
+                    .groupby([DATE_COL, STATION_COL])[TARGET_COL]
+                    .mean()
+                    .rename("target_dep"))
+
+    arr_target = (df[df["EVENT_TYPE"] == 0]          # 0 = arrival
+                    .groupby([DATE_COL, STATION_COL])[TARGET_COL]
+                    .mean()
+                    .rename("target_arr"))
+
+    # Context features: aggregate over ALL rows (arrival + departure) per cell
+    feat_agg = grp.agg(agg_dict_feat)
+
+    # Combine into one flat table
+    combined = feat_agg.join(dep_target).join(arr_target).reset_index()
+
+    # -- build station/external/target dense arrays --
+    stations   = sorted(combined[STATION_COL].unique())
+    timestamps = sorted(combined[DATE_COL].unique())
     N = len(stations)
     T = len(timestamps)
     print(f"  Timesteps : {T},  Stations : {N}")
- 
+
+    # Station features = original STATION_FEATURE_COLS
+    # + arrival delay as an extra autoregressive input feature
+    all_station_cols = STATION_FEATURE_COLS + ["target_arr"]
+    F  = len(all_station_cols)
+    E  = len(EXTERNAL_COLS) if EXTERNAL_COLS else 1
+
+    station_arr  = np.full((T, N, F), np.nan, dtype=np.float32)
+    external_arr = np.full((T, E),    np.nan, dtype=np.float32)
+    target_arr   = np.full((T, N),    np.nan, dtype=np.float32)
+
     station_idx = {s: i for i, s in enumerate(stations)}
     time_idx    = {t: i for i, t in enumerate(timestamps)}
- 
-    # ── auto-detect feature columns if not specified ──────────────────
-    #global STATION_FEATURE_COLS, EXTERNAL_COLS
- 
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    # remove target, and columns we will handle separately
-    skip = {TARGET_COL, STATION_COL}
- 
-    if not STATION_FEATURE_COLS and not EXTERNAL_COLS:
-        # Heuristic: a column is "external" if its std across stations at the
-        # same timestep is ~0 (same value everywhere).  Otherwise it's a
-        # station feature.
-        sample = df[df[DATE_COL] == timestamps[0]]
-        for col in numeric_cols:
-            if col in skip:
-                continue
-            if sample[col].std() < 1e-6:
-                EXTERNAL_COLS.append(col)
-            else:
-                STATION_FEATURE_COLS.append(col)
- 
-    # Always add target to station features (as input for autoregressive use)
-    all_station_cols = STATION_FEATURE_COLS + [TARGET_COL]
- 
-    print(f"  Station features ({len(all_station_cols)}): {all_station_cols}")
-    print(f"  External features ({len(EXTERNAL_COLS)}): {EXTERNAL_COLS}")
- 
-    # ── build dense arrays ────────────────────────────────────────────
-    F = len(all_station_cols)
-    E = len(EXTERNAL_COLS) if EXTERNAL_COLS else 1   # at least 1 dim
- 
-    station_arr  = np.zeros((T, N, F), dtype=np.float32)
-    external_arr = np.zeros((T, E),    dtype=np.float32)
-    target_arr   = np.zeros((T, N),    dtype=np.float32)
- 
-    for _, row in df.iterrows():
+
+    for _, row in combined.iterrows():
         t = time_idx[row[DATE_COL]]
         n = station_idx[row[STATION_COL]]
-        station_arr[t, n, :] = [row[c] if pd.notna(row.get(c)) else 0.0
-                                 for c in all_station_cols]
-        target_arr[t, n]     = row[TARGET_COL] if pd.notna(row[TARGET_COL]) else 0.0
-        if EXTERNAL_COLS:
-            external_arr[t, :] = [row[c] if pd.notna(row.get(c)) else 0.0
-                                   for c in EXTERNAL_COLS]
-        else:
-            # dummy external feature (all zeros) if none found
-            external_arr[t, 0] = 0.0
- 
+
+        station_arr[t, n, :] = [
+            row[c] if pd.notna(row.get(c)) else np.nan
+            for c in all_station_cols
+        ]
+        target_arr[t, n] = row["target_dep"] if pd.notna(row.get("target_dep")) else np.nan
+
+        if EXTERNAL_COLS and np.isnan(external_arr[t, 0]):
+            external_arr[t, :] = [
+                row[c] if pd.notna(row.get(c)) else 0.0
+                for c in EXTERNAL_COLS
+            ]
+
+    print(f"  Station features ({F}): {all_station_cols}")
+    print(f"  External features ({E}): {EXTERNAL_COLS}")
+    print(f"  NaNs before fill — station: {np.isnan(station_arr).sum()}, "
+          f"external: {np.isnan(external_arr).sum()}, "
+          f"target: {np.isnan(target_arr).sum()}")
+
+    # -- forward-fill missing cells (limit = 3 steps) ---
+    for e in range(E):
+        s = pd.Series(external_arr[:, e])
+        external_arr[:, e] = s.ffill().fillna(0).values
+
+    for n in range(N):
+        for f in range(F):
+            s = pd.Series(station_arr[:, n, f])
+            station_arr[:, n, f] = s.ffill(limit=3).fillna(0).values
+
+    for n in range(N):
+        s = pd.Series(target_arr[:, n])
+        target_arr[:, n] = s.ffill(limit=3).fillna(0).values
+
+    print(f"  NaNs after  fill — station: {np.isnan(station_arr).sum()}, "
+          f"external: {np.isnan(external_arr).sum()}, "
+          f"target: {np.isnan(target_arr).sum()}")
+
     return station_arr, external_arr, target_arr, stations
- 
- 
+
+
 def normalize(train_arr, val_arr, test_arr):
     """Fit scaler on train, apply to all splits. Works on (T, N, F) arrays."""
     T_tr, N, F = train_arr.shape
@@ -426,4 +348,3 @@ def normalize(train_arr, val_arr, test_arr):
         sh = arr.shape
         return scaler.transform(arr.reshape(-1, F)).reshape(sh)
     return _transform(train_arr), _transform(val_arr), _transform(test_arr), scaler
- 
