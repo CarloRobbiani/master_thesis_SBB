@@ -146,10 +146,13 @@ class XGBoostBaseline:
 
         all_importances = np.array(all_importances)
 
-        if aggregate == "mean":
+        all_importances = all_importances / all_importances.sum(axis=1, keepdims=True)
+        final_importance = all_importances.mean(axis=0)
+
+        """ if aggregate == "mean":
             final_importance = all_importances.mean(axis=0)
         elif aggregate == "sum":
-            final_importance = all_importances.sum(axis=0)
+            final_importance = all_importances.sum(axis=0) """
 
         df = pd.DataFrame({
             "feature": feature_names,

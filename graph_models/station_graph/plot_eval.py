@@ -44,7 +44,7 @@ NUM_BLOCKS  = 3
 HORIZON     = 1
 SEQ_LEN     = 28
 BATCH_SIZE  = 32
-TRAIN_RATIO = 0.8
+TRAIN_RATIO = 0.7
 DEVICE      = device
 
 # ── load & split ──────────────────────────────────────────────────────────────

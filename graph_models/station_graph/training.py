@@ -81,30 +81,13 @@ SEQ_LEN     = 28
 EPOCHS      = 80
 BATCH_SIZE  = 32
 LR          = 1e-3
-TRAIN_RATIO = 0.8
+TRAIN_RATIO = 0.7
 DEVICE      = device
 
 
 # ──────────────────────────────────────────────
 # 1.  TARGET TRANSFORMS
 # ──────────────────────────────────────────────
-
-def scale_log(arr):
-    """
-    log1p-transform for delay targets.
-
-    Delays can be negative (trains running ahead of schedule). We shift the
-    distribution so the minimum maps to 0 before applying log1p, then
-    remember the shift so we can invert later.
-
-    Concretely:
-        shifted = arr - global_min          (all values >= 0)
-        transformed = log1p(shifted)
-
-    The global_min is computed on the training split only and stored in a
-    closure so val/test can use the same shift.
-    """
-    pass  # implemented below in main() for clarity
 
 
 # ──────────────────────────────────────────────
