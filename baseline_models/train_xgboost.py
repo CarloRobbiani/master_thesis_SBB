@@ -23,6 +23,8 @@ df["dow_cos"] = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek
 df["hto000d0"] = df["hto000d0"].fillna(0)
 df = df.drop(["date", "days"], axis=1)
 
+
+
 # Reduce data types to save space
 for col in df.select_dtypes(include=["int64", "float64"]).columns:
     df[col] = pd.to_numeric(df[col], downcast="float")
@@ -37,12 +39,46 @@ prediction = my_xgboost.predict(X_test)
 
 my_xgboost.plot_loss()
 
+plot_len = 400 # Number of entries to show None = all
+
 val_end = int(len(X) * (0.7 + 0.15))
 actual_timestamps = df.iloc[val_end:]["OPERATION_PLANNED_TIMESTAMP"]
-plt.plot(actual_timestamps, y_test)
-plt.plot(actual_timestamps, prediction)
+fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+
+if plot_len is not None:
+    pred_series = prediction[:plot_len]
+    true_series = y_test[:plot_len]
+
+
+axes[0].scatter(true_series, pred_series, alpha=0.5, s=20, color="steelblue", label="Predictions")
+
+# Add diagonal line (perfect prediction)
+min_val = min(true_series.min(), pred_series.min())
+max_val = max(true_series.max(), pred_series.max())
+axes[0].plot([min_val, max_val], [min_val, max_val], "r--", linewidth=2, label="Perfect prediction (y=x)")
+
+axes[0].set_xlabel("Actual Delay (seconds)")
+axes[0].set_ylabel("Predicted Delay (seconds)")
+axes[0].set_title(f"Predicted vs Actual Delays")
+axes[0].legend()
+axes[0].grid(True, alpha=0.3)
+
+error = pred_series[:,0] - true_series
+
+axes[1].hist(error, bins=30, alpha=0.7, color="orange", edgecolor="black", label="Prediction error")
+axes[1].axvline(0, color="red", linewidth=2, linestyle="--", label="Zero error")
+axes[1].axvline(error.mean(), color="green", linewidth=2, linestyle="--", label=f"Mean error: {error.mean():.1f}s")
+axes[1].set_xlabel("Error (seconds)")
+axes[1].set_ylabel("Frequency")
+axes[1].set_title("Prediction Error Distribution")
+axes[1].legend()
+
+plt.tight_layout()
 plt.savefig("images/Xgboost_comparison.png")
 plt.show()
+
+
 
 mae_error = mean_absolute_error(y_test,prediction)
 rmse_error = root_mean_squared_error(y_test, prediction)

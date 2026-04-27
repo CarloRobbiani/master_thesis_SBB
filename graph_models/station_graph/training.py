@@ -78,7 +78,7 @@ HORIZON     = 1
 SEQ_LEN     = 28
 
 # ---- Training ----
-EPOCHS      = 80
+EPOCHS      = 60
 BATCH_SIZE  = 32
 LR          = 1e-3
 TRAIN_RATIO = 0.7
