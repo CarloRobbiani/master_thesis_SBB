@@ -138,9 +138,13 @@ class XGBoostBaseline:
                 feature_names = [f"f{i}" for i in range(n_features)]
 
             imp = np.zeros(len(feature_names))
-            for i, fname in enumerate(feature_names):
+            """ for i, fname in enumerate(feature_names):
                 key = f"f{i}"
-                imp[i] = score.get(key, 0.0)
+                imp[i] = score.get(key, 0.0) """
+            
+            for fname, val in score.items():
+                idx = feature_names.index(fname)
+                imp[idx] = val
 
             all_importances.append(imp)
 
@@ -174,4 +178,49 @@ class XGBoostBaseline:
         # Mean across horizons and samples
         mean_shap = shap_values_all.mean(axis=(0,1))
 
-        return mean_shap
+        return pd.DataFrame({
+            "feature": X_sample.columns,
+            "importance": mean_shap
+        }).sort_values("importance", ascending=False)
+
+        #return mean_shap
+
+    def shap_dependence(self, X_sample, feature):
+        """
+        Returns feature values and corresponding SHAP contributions
+        across all models (horizons).
+        contribution means how much delay it adds/removes
+        """
+
+        feature_idx = list(X_sample.columns).index(feature)
+
+        values_all = []
+        shap_all = []
+
+        for model in self.models:
+            explainer = shap.TreeExplainer(model)
+            shap_values = explainer.shap_values(X_sample)
+
+            if isinstance(shap_values, list):
+                shap_values = np.array(shap_values).mean(axis=0)
+
+            values_all.append(X_sample.iloc[:, feature_idx].values)
+            shap_all.append(shap_values[:, feature_idx])
+
+        values_all = np.concatenate(values_all)
+        shap_all = np.concatenate(shap_all)
+
+        return pd.DataFrame({
+            "feature_value": values_all,
+            "shap_value": shap_all
+        })
+    
+def summarize_dependence(dep_df, n_bins=20):
+    dep_df["bin"] = pd.qcut(dep_df["feature_value"], q=n_bins, duplicates="drop")
+
+    summary = dep_df.groupby("bin").agg({
+        "feature_value": "mean",
+        "shap_value": "mean"
+    }).reset_index(drop=True)
+
+    return summary

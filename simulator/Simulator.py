@@ -211,7 +211,7 @@ if __name__ == "__main__":
     ("TUE", "BI",  "IC5"): 240,  # was wrongly set to 180; real planned = 240s
     ("NE",  "SBL", "IC5"): 180,  # was wrongly set to 120; real planned = 180s
     ("LIG", "TWN", "IC5"): 120,  # correct ✓
-    ("TWM", "LIG", "IC5"): 120,
+    ("TWN", "LIG", "IC5"): 120,
     ("LIG", "NV", "IC5"): 120,
     ("NV", "LIG", "IC5"): 120,
     ("SBL", "CORN","IC5"): 120,  # correct ✓

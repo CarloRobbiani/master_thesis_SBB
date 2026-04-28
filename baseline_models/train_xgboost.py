@@ -1,5 +1,5 @@
 import pandas as pd
-from XGBoost import XGBoostBaseline
+from XGBoost import XGBoostBaseline, summarize_dependence
 from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 import numpy as np
 import sys
@@ -84,6 +84,16 @@ mae_error = mean_absolute_error(y_test,prediction)
 rmse_error = root_mean_squared_error(y_test, prediction)
 print(f"Mean absolute error: {mae_error}")
 print(f"Root mean squared error: {rmse_error}")
+
+for feature in ["fu3010z0", "fkl010z1", "hour_cos"]:
+    dep_df = my_xgboost.shap_dependence(X_test, feature)
+    summary = summarize_dependence(dep_df)
+
+    plt.figure()
+    plt.scatter(dep_df["feature_value"], dep_df["shap_value"], alpha=0.2)
+    plt.plot(summary["feature_value"], summary["shap_value"], color="red")
+    plt.title(feature)
+    plt.show()
 
 importance_df = my_xgboost.feature_importance(
     feature_names=X.columns.tolist(),
