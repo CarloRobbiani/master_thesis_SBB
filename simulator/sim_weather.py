@@ -1,6 +1,7 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from sim_topology import Segment
 import random
+import pandas as pd
 
 # ══════════════════════════════════════════════════════════════════════════════
 # WEATHER
@@ -20,51 +21,52 @@ class WeatherConditions:
     snow_cm       : fresh snow depth (cm).  > 5 increases switch failure risk.
     visibility_m  : visibility (m).  < 200 triggers fog speed restriction.
     """
-    temp_c:       float = 15.0
-    wind_ms:      float = 0.0
-    precip_mm:    float = 0.0
-    snow_cm:      float = 0.0
-    visibility_m: float = 10_000.0
+    tree200s0:  float = 15.0 # Air temp
+    fkl010z1:   float = 0.0  # Gust peak
+    fu3010z0:   float = 0.0  # Wind velocity
+    rre150z0:   float = 0.0  # Precipation
+    htoauts0:   float = 0.0  # Snow height Biel
+    hto000d0:   float = 0.0  # Snow height Neuchatel
  
     # ── derived speed factors ─────────────────────────────────────────────────
  
     def speed_factor(self, segment: Segment) -> float:
-        """
-        Return a multiplicative factor (0 < f ≤ 1.0) applied to the segment's
-        line speed.  The most restrictive applicable rule wins.
-        """
         factor = 1.0
- 
+
         if not segment.tunnel:
-            # Ice: frozen rails → speed restricted to 120 km/h max on all tracks
-            if self.temp_c <= 0:
+            # Temperature — keep existing thresholds, they match the data
+            if self.tree200s0 <= 0:
                 factor = min(factor, 0.80)
- 
-            # Frost (just below freezing, not full ice)
-            if 0 < self.temp_c <= 2:
-                factor = min(factor, 0.90)
- 
-            # Wind on exposed (lakeside) segments
+            elif self.tree200s0 <= 2:
+                factor = min(factor, 0.92)
+
+            # Wind — only apply on exposed segments, raise thresholds significantly
+            # Data shows gusts up to 30 m/s on LOW delay days, so wind effect
+            # only kicks in at extreme values on this corridor
             if segment.exposed:
-                if self.wind_ms >= 25:
-                    factor = min(factor, 0.60)   # severe storm
-                elif self.wind_ms >= 20:
-                    factor = min(factor, 0.75)   # strong wind
-                elif self.wind_ms >= 15:
-                    factor = min(factor, 0.90)   # moderate wind
- 
-            # Heavy precipitation leads to extended braking distance
-            if self.precip_mm >= 10:
+                if self.fu3010z0 >= 40:      # extreme storm (p99+ in data)
+                    factor = min(factor, 0.70)
+                elif self.fu3010z0 >= 30:    # severe (p99 in data)
+                    factor = min(factor, 0.85)
+                elif self.fu3010z0 >= 25:    # strong (p95 in data)
+                    factor = min(factor, 0.93)
+                # Below 25 m/s: no effect — data shows no correlation
+
+            # Precipitation — strongest signal, keep but recalibrate units
+            # rre150z0 is mm/10min, convert *6 for mm/h before passing in
+            if self.rre150z0 * 6 >= 8:         # heavy (max in data ~10.8 mm/h)
                 factor = min(factor, 0.85)
-            elif self.precip_mm >= 3:
+            elif self.rre150z0 * 6 >= 3:
                 factor = min(factor, 0.93)
- 
-            # Fog
-            if self.visibility_m < 200:
+            elif self.rre150z0 * 6 >= 1:
+                factor = min(factor, 0.97)
+
+            # Snow
+            if self.htoauts0 > 20:
                 factor = min(factor, 0.70)
-            elif self.visibility_m < 500:
+            elif self.htoauts0 > 10:
                 factor = min(factor, 0.85)
- 
+
         return factor
  
     def switch_failure_prob(self) -> float:
@@ -72,11 +74,11 @@ class WeatherConditions:
         Probability that a switch failure adds extra dwell time at a station.
         Driven by snow depth.
         """
-        if self.snow_cm >= 20:
+        if self.htoauts0 >= 20:
             return 0.15
-        if self.snow_cm >= 10:
+        if self.htoauts0 >= 10:
             return 0.08
-        if self.snow_cm >= 5:
+        if self.htoauts0 >= 5:
             return 0.03
         return 0.0
  
@@ -92,9 +94,23 @@ class WeatherConditions:
         factor = self.speed_factor(segment)
         # Travel time scales inversely with speed factor
         return planned_sec / factor
+    
+
+    @classmethod
+    def from_meteoswiss_row(cls, row: pd.Series) -> "WeatherConditions":
+        """Create WeatherConditions from a MeteoSwiss data row matching training features."""
+        return cls(
+            tree200s0       = float(row.get("tree200s0", 15.0)),  # temp C
+            fu3010z0      = float(row.get("fu3010z0", 0.0)),   # wind velocity km/h
+            fkl010z1    = float(row.get("fkl010z1", 0.0)),    # gust peak
+            rre150z0    = float(row.get("rre150z0", 0.0)),  # rain fall
+            htoauts0       = float(row.get("htoauts0", 0.0)),   # snow height at the moment
+            hto000d0    = float(row.get("hto000d0", 0.0))   # snow at 6am in Neuchatel
+            
+        )
  
     def __str__(self) -> str:
-        parts = [f"T={self.temp_c}°C", f"wind={self.wind_ms}m/s",
-                 f"precip={self.precip_mm}mm/h", f"snow={self.snow_cm}cm",
-                 f"vis={self.visibility_m}m"]
+        parts = [f"T={self.tree200s0}°C", f"wind={self.fu3010z0}m/s",
+                 f"precip={self.rre150z0}mm/h", f"snow={self.htoauts0}cm",
+                ]
         return "  ".join(parts)

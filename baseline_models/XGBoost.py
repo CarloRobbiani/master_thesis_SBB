@@ -138,13 +138,13 @@ class XGBoostBaseline:
                 feature_names = [f"f{i}" for i in range(n_features)]
 
             imp = np.zeros(len(feature_names))
-            """ for i, fname in enumerate(feature_names):
+            for i, fname in enumerate(feature_names):
                 key = f"f{i}"
-                imp[i] = score.get(key, 0.0) """
+                imp[i] = score.get(key, 0.0)
             
-            for fname, val in score.items():
+            """ for fname, val in score.items():
                 idx = feature_names.index(fname)
-                imp[idx] = val
+                imp[idx] = val """
 
             all_importances.append(imp)
 
@@ -218,7 +218,7 @@ class XGBoostBaseline:
 def summarize_dependence(dep_df, n_bins=20):
     dep_df["bin"] = pd.qcut(dep_df["feature_value"], q=n_bins, duplicates="drop")
 
-    summary = dep_df.groupby("bin").agg({
+    summary = dep_df.groupby("bin", observed=False).agg({
         "feature_value": "mean",
         "shap_value": "mean"
     }).reset_index(drop=True)

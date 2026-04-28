@@ -15,6 +15,7 @@ class StopEntry:
     train_number:  int
     station:       str
     event_type:    str        # "arrival" | "departure"
+    event_served:  bool
     stop_type:     str        # "commercialStop" | "pass"
     planned_ts:    datetime
     actual_delay:  float      # ground-truth delay in seconds
@@ -22,6 +23,7 @@ class StopEntry:
     line:          str
     category:      str        # "FV" | "RV"
     max_speed_kmh: int
+    period_id:     str
     direction:     str = ""   # "BI_to_NE" | "NE_to_BI" | "" (unknown)
  
  
@@ -32,6 +34,8 @@ class TrainSchedule:
     line:         str
     category:     str
     max_speed_kmh: int
+    event_served: bool
+    period_id:    str
     stops:        list[StopEntry]
     direction:    str   # "BI_to_NE" | "NE_to_BI"
  
@@ -110,8 +114,10 @@ class Timetable:
                     train_number  = int(tn),
                     station       = row["OPERATING_POINT_ABBREVIATION"],
                     event_type    = row["EVENT_TYPE"],
+                    event_served  = row["EVENT_SERVED"],
                     stop_type     = row.get("PLAN_STOP_TYPE", "commercialStop"),
                     planned_ts    = row["OPERATION_PLANNED_TIMESTAMP"],
+                    period_id     = row["OPERATION_DAY_PERIOD_IDENTIFIER_COARSE"],
                     actual_delay  = float(row["delay_sec"])
                                     if pd.notna(row["delay_sec"]) else float("nan"),
                     sequence      = float(row["OPERATION_TRAIN_RUN_SEQUENCE_NUMBER"]),
@@ -138,6 +144,8 @@ class Timetable:
                 line          = line_val,
                 category      = cat_val,
                 max_speed_kmh = spd_val,
+                event_served  = stops[0].event_served,
+                period_id     = stops[0].period_id,
                 stops         = stops,
                 direction     = direction,
             ))

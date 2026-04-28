@@ -10,9 +10,13 @@ from typing import Optional
 class SimEvent:
     """One recorded event from the simulation."""
     train_number:    int
+    traffic_category: str
     line:            str
     station:         str
     event_type:      str          # "arrival" | "departure"
+    event_served:    str
+    max_velocity:    int
+    period_id:       str
     stop_type:       str
     planned_ts:      datetime
     simulated_ts:    datetime

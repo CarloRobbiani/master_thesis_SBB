@@ -171,9 +171,13 @@ class TrainProcess:
                     f"actual_sim={arr_actual_sim:.0f} delay={arr_delay:.0f}s") """
                 self.sim_events.append(SimEvent(
                     train_number    = schedule.train_number,
+                    traffic_category= schedule.category,
                     line            = schedule.line,
                     station         = station_abbr,
                     event_type      = "arrival",
+                    event_served    = schedule.event_served,
+                    max_velocity    = schedule.max_speed_kmh,
+                    period_id       = schedule.period_id,
                     stop_type       = arr_stop.stop_type,
                     planned_ts      = arr_stop.planned_ts,
                     simulated_ts    = self._sim_to_ts(arr_actual_sim),
@@ -216,7 +220,7 @@ class TrainProcess:
                     extra = self.weather.switch_failure_delay_sec()
                     yield self.env.timeout(extra)
                     #self.current_delay += extra
-                    switch_causes.append(f"switch_failure(+{extra:.0f}s,snow={self.weather.snow_cm}cm)")
+                    switch_causes.append(f"switch_failure(+{extra:.0f}s,snow={self.weather.htoauts0}cm)")
  
             # ── 7. DEPARTURE ──────────────────────────────────────────────────
             if dep_stop is not None:
@@ -231,9 +235,13 @@ class TrainProcess:
  
                 self.sim_events.append(SimEvent(
                     train_number    = schedule.train_number,
+                    traffic_category= schedule.category,
                     line            = schedule.line,
                     station         = station_abbr,
                     event_type      = "departure",
+                    event_served    = True,
+                    max_velocity    = schedule.max_speed_kmh,
+                    period_id       = schedule.period_id,
                     stop_type       = dep_stop.stop_type,
                     planned_ts      = dep_stop.planned_ts,
                     simulated_ts    = self._sim_to_ts(dep_actual_sim),

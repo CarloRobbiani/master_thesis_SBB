@@ -119,7 +119,7 @@ class RailwaySimulator:
  
 def weather_sensitivity(
     timetable: Timetable,
-    param:     str = "wind_ms",
+    param:     str = "fu3010z0",
     values:    Optional[list] = None,
     seed:      int = 42,
 ) -> pd.DataFrame:
@@ -140,11 +140,10 @@ def weather_sensitivity(
         print(df)
     """
     defaults = {
-        "temp_c":       [15, 5, 0, -5, -10, -20],
-        "wind_ms":      [0, 5, 10, 15, 20, 25, 30],
-        "precip_mm":    [0, 1, 3, 5, 10, 20],
-        "snow_cm":      [0, 2, 5, 10, 20, 40],
-        "visibility_m": [10000, 2000, 1000, 500, 200, 100],
+        "tree200s0":       [15, 5, 0, -5, -10, -20],
+        "fu3010z0":      [0, 5, 10, 15, 20, 25, 30],
+        "rre150z0":    [0, 1, 3, 5, 10, 20],
+        "htoauts0":      [0, 2, 5, 10, 20, 40],
     }
     if values is None:
         values = defaults.get(param, [0, 5, 10])
@@ -238,7 +237,12 @@ if __name__ == "__main__":
  
     # ── Run 2: winter storm ───────────────────────────────────────────────────
     print("══ Run 2: winter storm ══")
-    storm = WeatherConditions(temp_c=-4, wind_ms=22, precip_mm=8, snow_cm=15, visibility_m=300)
+    weather_row = df_raw[df_raw['OPERATIONAL_DAY'] == day].iloc[0]
+    weather = WeatherConditions.from_meteoswiss_row(weather_row)
+    sim = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, weather, seed=42)
+    result = sim.run()
+    # Feed result into GCN and compare predictions
+    storm = WeatherConditions(tree200s0=-4, fu3010z0=22, rre150z0=8, htoauts0=15)
     sim2  = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, storm, seed=42)
     r2    = sim2.run()
     #r2.to_csv("winter_strom.csv")
@@ -246,5 +250,5 @@ if __name__ == "__main__":
  
     # ── Run 3: wind sensitivity sweep ────────────────────────────────────────
     print("══ Wind sensitivity sweep ══")
-    sweep = weather_sensitivity(tt, param="wind_ms", seed=42)
+    sweep = weather_sensitivity(tt, param="fu3010z0", seed=42)
     print(sweep.to_string(index=False))

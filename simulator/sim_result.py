@@ -42,26 +42,37 @@ class SimResult:
         if self._df is None:
             rows = []
             for e in self.events:
+                w = self.weather
                 rows.append({
-                    "train":           e.train_number,
-                    "line":            e.line,
-                    "station":         e.station,
-                    "event_type":      e.event_type,
-                    "stop_type":       e.stop_type,
-                    "planned_ts":      e.planned_ts,
-                    "simulated_ts":    e.simulated_ts,
-                    "simulated_delay": e.simulated_delay,
-                    "actual_delay":    e.actual_delay,
+                    "TRAIN_NUMBER":                         e.train_number,
+                    "COMMERCIAL_LINE_NUMBER_DESIGNATION":   e.line,
+                    "OPERATING_POINT_ABBREVIATION":         e.station,
+                    "OPERATION_TRAFFIC_CATEGORY_ABBREVIATION": e.traffic_category,
+                    "EVENT_TYPE":      e.event_type,
+                    "EVENT_SERVED": True,
+                    "PLAN_STOP_TYPE":       e.stop_type,
+                    "PLAN_FORMATION_MAXIMAL_VELOCITY":  e.max_velocity,
+                    "OPERATION_DAY_PERIOD_IDENTIFIER_COARSE": e.period_id,
+                    "OPERATION_PLANNED_TIMESTAMP":      e.planned_ts,
+                    "SIMULATED_TIMESTAMP":    e.simulated_ts,
+                    "SIMULATED_DELAY": e.simulated_delay,
+                    "DAILY_PLAN_OPERATIONAL_DELAY_SEC":    e.actual_delay,
+                    "tre200s0": w.tree200s0,
+                    "fkl010z1": w.fkl010z1,
+                    "fu3010z0": w.fu3010z0,
+                    "rre150z0": w.rre150z0,
+                    "htoauts0": w.htoauts0,
+                    "hto000d0": w.hto000d0,
                     "causes":          " | ".join(e.causes),
                 })
             self._df = pd.DataFrame(rows)
         return self._df
  
     def accuracy(self) -> dict:
-        df = self.to_dataframe().dropna(subset=["actual_delay"])
+        df = self.to_dataframe().dropna(subset=["DAILY_PLAN_OPERATIONAL_DELAY_SEC"])
         if df.empty:
             return {"mae": float("nan"), "rmse": float("nan"), "n": 0}
-        err = df["simulated_delay"] - df["actual_delay"]
+        err = df["SIMULATED_DELAY"] - df["DAILY_PLAN_OPERATIONAL_DELAY_SEC"]
         return {
             "mae":  float(err.abs().mean()),
             "rmse": float(np.sqrt((err ** 2).mean())),
@@ -70,12 +81,12 @@ class SimResult:
  
     def punctuality(self) -> dict:
         df = self.to_dataframe()
-        deps = df[df["event_type"] == "departure"]
+        deps = df[df["EVENT_TYPE"] == "departure"]
         if deps.empty:
             return {"simulated": float("nan"), "actual": float("nan")}
         return {
-            "simulated": float((deps["simulated_delay"].abs() <= PUNCTUALITY_SEC).mean()),
-            "actual":    float((deps["actual_delay"].abs() <= PUNCTUALITY_SEC).mean()),
+            "simulated": float((deps["SIMULATED_DELAY"].abs() <= PUNCTUALITY_SEC).mean()),
+            "actual":    float((deps["DAILY_PLAN_OPERATIONAL_DELAY_SEC"].abs() <= PUNCTUALITY_SEC).mean()),
         }
  
     def conflict_summary(self) -> pd.DataFrame:
@@ -151,19 +162,20 @@ class SimResult:
         )
         lines.append(f"  {'-' * 93}")
  
-        df = self.to_dataframe().sort_values("planned_ts")
+        df = self.to_dataframe().sort_values("OPERATION_PLANNED_TIMESTAMP")
         for _, row in df.iterrows():
             err_s = ""
-            if pd.notna(row["actual_delay"]):
-                err_s = f"{row['simulated_delay'] - row['actual_delay']:+.0f}s"
-            ad_s = f"{row['actual_delay']:+.0f}s" if pd.notna(row["actual_delay"]) else "  n/a"
+            if pd.notna(row["DAILY_PLAN_OPERATIONAL_DELAY_SEC"]):
+                err_s = f"{row['SIMULATED_DELAY'] - row['DAILY_PLAN_OPERATIONAL_DELAY_SEC']:+.0f}s"
+            ad_s = f"{row['DAILY_PLAN_OPERATIONAL_DELAY_SEC']:+.0f}s" if pd.notna(row["DAILY_PLAN_OPERATIONAL_DELAY_SEC"]) else "  n/a"
             lines.append(
-                f"  {int(row['train']):>6}  "
-                f"{row['line']:<5}  "
-                f"{row['station']:<6}  "
-                f"{row['event_type']:<9}  "
-                f"{row['planned_ts'].strftime('%H:%M'):<8}  "
-                f"{row['simulated_delay']:>+8.0f}s  "
+
+                f"  {int(row['TRAIN_NUMBER']):>6}  "
+                f"{row['COMMERCIAL_LINE_NUMBER_DESIGNATION']:<5}  "
+                f"{row['OPERATING_POINT_ABBREVIATION']:<6}  "
+                f"{row['EVENT_TYPE']:<9}  "
+                f"{row['OPERATION_PLANNED_TIMESTAMP'].strftime('%H:%M'):<8}  "
+                f"{row['SIMULATED_DELAY']:>+8.0f}s  "
                 f"{ad_s:>9}  "
                 f"{err_s:>7}  "
                 f"{row['causes'][:60]}"
