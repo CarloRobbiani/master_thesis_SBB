@@ -35,10 +35,8 @@ class WeatherConditions:
 
         if not segment.tunnel:
             # Temperature — keep existing thresholds, they match the data
-            if self.tree200s0 <= 0:
-                factor = min(factor, 0.80)
-            elif self.tree200s0 <= 2:
-                factor = min(factor, 0.92)
+            if self.tree200s0 <= -5:
+                factor = min(factor, 0.9)
 
             # Wind — only apply on exposed segments, raise thresholds significantly
             # Data shows gusts up to 30 m/s on LOW delay days, so wind effect
@@ -100,7 +98,7 @@ class WeatherConditions:
     def from_meteoswiss_row(cls, row: pd.Series) -> "WeatherConditions":
         """Create WeatherConditions from a MeteoSwiss data row matching training features."""
         return cls(
-            tree200s0       = float(row.get("tree200s0", 15.0)),  # temp C
+            tree200s0       = float(row.get("tre200s0", 15.0)),  # temp C
             fu3010z0      = float(row.get("fu3010z0", 0.0)),   # wind velocity km/h
             fkl010z1    = float(row.get("fkl010z1", 0.0)),    # gust peak
             rre150z0    = float(row.get("rre150z0", 0.0)),  # rain fall

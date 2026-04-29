@@ -35,6 +35,8 @@ import numpy as np
 from stationMATGCN import StationMATGCN
 from utils import load_and_pivot, normalize, prepare_laplacian
 from delay_dataset import DelayDataset
+import json
+import pickle
 
 # ──────────────────────────────────────────────
 # 0.  CONFIGURATION
@@ -161,6 +163,7 @@ def main():
     # ── normalize station features ────────────────────────────────────
     tr_st, va_st, te_st, feat_scaler = normalize(tr_st, va_st, te_st)
 
+
     # ── log1p-transform targets ───────────────────────────────────────
     #
     # Delays are in seconds and can be negative (early arrivals).
@@ -169,6 +172,14 @@ def main():
     # keeping the relative ordering and allowing exact inversion.
     #
     tg_min = float(tr_tg.min())   # computed on train split only
+
+    # Save stats for simulation evaluation
+    with open("data/train_stats.json", "w") as f:
+        json.dump({"tg_min": tg_min}, f)
+
+    with open("data/feat_scaler.pkl", "wb") as f:
+        pickle.dump(feat_scaler, f)
+
 
     def to_log(a):
         return np.log1p(np.clip(a - tg_min, 0, None))

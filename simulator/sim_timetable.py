@@ -18,6 +18,7 @@ class StopEntry:
     event_served:  bool
     stop_type:     str        # "commercialStop" | "pass"
     planned_ts:    datetime
+    actual_ts:     datetime
     actual_delay:  float      # ground-truth delay in seconds
     sequence:      float
     line:          str
@@ -117,6 +118,7 @@ class Timetable:
                     event_served  = row["EVENT_SERVED"],
                     stop_type     = row.get("PLAN_STOP_TYPE", "commercialStop"),
                     planned_ts    = row["OPERATION_PLANNED_TIMESTAMP"],
+                    actual_ts     = row["OPERATION_ACTUAL_TIMESTAMP"],
                     period_id     = row["OPERATION_DAY_PERIOD_IDENTIFIER_COARSE"],
                     actual_delay  = float(row["delay_sec"])
                                     if pd.notna(row["delay_sec"]) else float("nan"),

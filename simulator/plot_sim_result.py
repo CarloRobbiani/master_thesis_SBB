@@ -3,11 +3,11 @@ import pandas as pd
 
 df = pd.read_csv("simulator/normal_weather.csv")
 
-print(df["line"].unique())
+#print(df["COMMERCIAL_LINE_NUMBER_DESIGNATION"].unique())
 
 
-for name, group in df.groupby('line'):
-    plt.plot(group.index, group['simulated_delay'], label=name)
+for name, group in df.groupby('COMMERCIAL_LINE_NUMBER_DESIGNATION'):
+    plt.plot(group.index, group['SIMULATED_DELAY'], label=name)
 
 plt.legend()
 plt.xlabel("Index")

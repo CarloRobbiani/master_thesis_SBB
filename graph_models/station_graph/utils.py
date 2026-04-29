@@ -195,7 +195,7 @@ def evaluate(model, dataloader, laplacian, criterion, device):
     return total_loss / total_samples, rmse
 
 
-def load_and_pivot(path, STATION_FEATURE_COLS, EXTERNAL_COLS):
+def load_and_pivot(path:str, STATION_FEATURE_COLS, EXTERNAL_COLS):
     """
     Load the parquet file and return arrays suitable for the MATGCN model.
 
@@ -205,12 +205,20 @@ def load_and_pivot(path, STATION_FEATURE_COLS, EXTERNAL_COLS):
         target_arr   : np.ndarray of shape (T, N)
         stations     : list of station ids (length N)
     """
-  
-    df = pd.read_parquet(path)
+    
+    if path.endswith(".parquet"): # We predict the real data
+        df = pd.read_parquet(path)
+        TARGET_COL  = "DAILY_PLAN_OPERATIONAL_DELAY_SEC"
+    if path.endswith(".csv"): # We predict the simulated data
+        df = pd.read_csv(path)
+        TARGET_COL = "SIMULATED_DELAY"
 
     STATION_COL = "OPERATING_POINT_ABBREVIATION"
     DATE_COL    = "OPERATION_PLANNED_TIMESTAMP"
-    TARGET_COL  = "DAILY_PLAN_OPERATIONAL_DELAY_SEC"
+    
+
+    df["OPERATION_ACTUAL_TIMESTAMP"] = pd.to_datetime(df["OPERATION_ACTUAL_TIMESTAMP"])
+    df["OPERATION_PLANNED_TIMESTAMP"] = pd.to_datetime(df["OPERATION_PLANNED_TIMESTAMP"])
 
     # -- temporal encoding --
     df["hour_sin"] = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 24)
@@ -218,7 +226,8 @@ def load_and_pivot(path, STATION_FEATURE_COLS, EXTERNAL_COLS):
     df["dow_sin"]  = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
     df["dow_cos"]  = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
     df["hto000d0"] = df["hto000d0"].fillna(0)
-    df = df.drop(["date", "days"], axis=1)
+    if "date" in df.columns or "days" in df.columns:
+        df = df.drop(["date", "days"], axis=1)
     df = df.sort_values([DATE_COL, STATION_COL]).reset_index(drop=True)
 
     # -- categorical encoding --

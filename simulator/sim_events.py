@@ -19,6 +19,7 @@ class SimEvent:
     period_id:       str
     stop_type:       str
     planned_ts:      datetime
+    actual_ts:       datetime
     simulated_ts:    datetime
     simulated_delay: float        # seconds vs planned
     actual_delay:    float        # ground-truth (nan if unknown)

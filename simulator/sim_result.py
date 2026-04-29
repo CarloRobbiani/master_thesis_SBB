@@ -54,6 +54,7 @@ class SimResult:
                     "PLAN_FORMATION_MAXIMAL_VELOCITY":  e.max_velocity,
                     "OPERATION_DAY_PERIOD_IDENTIFIER_COARSE": e.period_id,
                     "OPERATION_PLANNED_TIMESTAMP":      e.planned_ts,
+                    "OPERATION_ACTUAL_TIMESTAMP":       e.actual_ts,
                     "SIMULATED_TIMESTAMP":    e.simulated_ts,
                     "SIMULATED_DELAY": e.simulated_delay,
                     "DAILY_PLAN_OPERATIONAL_DELAY_SEC":    e.actual_delay,

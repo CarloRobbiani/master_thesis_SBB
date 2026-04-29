@@ -230,17 +230,21 @@ if __name__ == "__main__":
  
     # ── Run 1: clear weather ──────────────────────────────────────────────────
     print("══ Run 1: clear weather ══")
-    sim1 = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, WeatherConditions(), seed=42)
+    day_rows = df_raw[df_raw['OPERATIONAL_DAY'] == day]
+    weather_row = day_rows[["tre200s0", "fkl010z1", "fu3010z0", 
+                            "rre150z0", "htoauts0", "hto000d0"]].mean()
+    weather = WeatherConditions.from_meteoswiss_row(weather_row)
+    sim1 = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, weather, seed=42)
+    #sim1 = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, WeatherConditions(), seed=42)
     r1   = sim1.run()
     r1.to_csv("simulator/normal_weather.csv")
     print(r1.summary())
  
     # ── Run 2: winter storm ───────────────────────────────────────────────────
     print("══ Run 2: winter storm ══")
-    weather_row = df_raw[df_raw['OPERATIONAL_DAY'] == day].iloc[0]
-    weather = WeatherConditions.from_meteoswiss_row(weather_row)
-    sim = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, weather, seed=42)
-    result = sim.run()
+    
+    #sim = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, weather, seed=42)
+    #result = sim.run()
     # Feed result into GCN and compare predictions
     storm = WeatherConditions(tree200s0=-4, fu3010z0=22, rre150z0=8, htoauts0=15)
     sim2  = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, storm, seed=42)

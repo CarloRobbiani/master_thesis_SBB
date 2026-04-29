@@ -1,6 +1,11 @@
 import torch.nn as nn
 import torch
-from utils import STBlock
+import os
+import sys
+sys.path.append(
+    os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir)))
+from graph_models.station_graph.utils import STBlock
+#from utils import STBlock
 
 class StationMATGCN(nn.Module):
     def __init__(
