@@ -39,7 +39,7 @@ prediction = my_xgboost.predict(X_test)
 
 my_xgboost.plot_loss()
 
-plot_len = 400 # Number of entries to show None = all
+plot_len = None # Number of entries to show None = all
 
 val_end = int(len(X) * (0.7 + 0.15))
 actual_timestamps = df.iloc[val_end:]["OPERATION_PLANNED_TIMESTAMP"]
@@ -49,6 +49,9 @@ fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 if plot_len is not None:
     pred_series = prediction[:plot_len]
     true_series = y_test[:plot_len]
+else:
+    pred_series = prediction
+    true_series = y_test
 
 
 axes[0].scatter(true_series, pred_series, alpha=0.5, s=20, color="steelblue", label="Predictions")

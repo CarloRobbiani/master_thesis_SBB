@@ -14,16 +14,16 @@ import pickle
 import os
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 # MAIN SIMULATOR
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
  
 class RailwaySimulator:
     """
     SimPy-based railway simulator for the Biel/Bienne ↔ Neuchâtel corridor.
  
     Parameters
-    ──────────
+    ----------
     timetable : Timetable
         Loaded via Timetable.from_parquet() or Timetable.from_dataframe().
     weather   : WeatherConditions
@@ -32,7 +32,7 @@ class RailwaySimulator:
         Random seed for switch failure draws (for reproducibility).
  
     Example
-    ───────
+    -------
         tt  = Timetable.from_parquet("data/train_data_weather.parquet", "2025-01-15")
         sim = RailwaySimulator(tt, WeatherConditions(temp_c=-5, snow_cm=12))
         result = sim.run()
@@ -62,7 +62,7 @@ class RailwaySimulator:
  
         env = simpy.Environment()
  
-        # ── Build segment resources ────────────────────────────────────────────
+        # -- Build segment resources --------------------------------------------
         # Single-track segments get capacity=1 (only one train at a time).
         # Double-track segments are unconstrained (capacity = large number).
         resources: dict[tuple[str, str], simpy.Resource] = {}
@@ -78,11 +78,11 @@ class RailwaySimulator:
                     resources[key]             = res
                     resources[(key[1], key[0])] = res   # same resource for reverse direction
  
-        # ── Shared output lists ────────────────────────────────────────────────
+        # -- Shared output lists ------------------------------------------------
         sim_events:   list[SimEvent]     = []
         conflict_log: list[ConflictEvent] = []
  
-        # ── Launch one process per train ────────────────────────────────────────
+        # -- Launch one process per train ----------------------------------------
         for schedule in tt.schedules:
             """ if schedule.train_number != 1506:
                 continue """
@@ -113,9 +113,9 @@ class RailwaySimulator:
     
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 # CONVENIENCE: SENSITIVITY SWEEP
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
  
 def weather_sensitivity(
     timetable: Timetable,
@@ -128,14 +128,14 @@ def weather_sensitivity(
     a summary DataFrame showing how MAE, RMSE and punctuality change.
  
     Parameters
-    ──────────
+    ----------
     timetable : Timetable
     param     : one of "temp_c", "wind_ms", "precip_mm", "snow_cm", "visibility_m"
     values    : list of values to try; if None, uses sensible defaults per param
     seed      : random seed
  
     Example
-    ───────
+    -------
         df = weather_sensitivity(tt, param="snow_cm", values=[0, 5, 10, 20, 40])
         print(df)
     """
@@ -168,9 +168,9 @@ def weather_sensitivity(
     return pd.DataFrame(rows)
  
  
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 # ENTRY POINT — demo when run directly
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
  
 if __name__ == "__main__":
     import sys
@@ -198,7 +198,7 @@ if __name__ == "__main__":
     if os.path.isfile("simulator/timetable.pkl"):
         with open("simulator/timetable.pkl", "rb") as f:
             PLANNED_SEGMENT_TIMES = pickle.load(f)
-    else: # file does not exist
+    else: # file does not exist built it from a new
         PLANNED_SEGMENT_TIMES = build_planned_segment_times(df_raw)
         with open("simulator/timetable.pkl", "wb") as fp:
             pickle.dump(PLANNED_SEGMENT_TIMES, fp)
@@ -207,13 +207,13 @@ if __name__ == "__main__":
     # In each case the correct value is taken from the cleaner direction.
     PLANNED_SEGMENT_TIMES.update({
     # IC5
-    ("TUE", "BI",  "IC5"): 240,  # was wrongly set to 180; real planned = 240s
-    ("NE",  "SBL", "IC5"): 180,  # was wrongly set to 120; real planned = 180s
-    ("LIG", "TWN", "IC5"): 120,  # correct ✓
+    ("TUE", "BI",  "IC5"): 240, 
+    ("NE",  "SBL", "IC5"): 180, 
+    ("LIG", "TWN", "IC5"): 120,  
     ("TWN", "LIG", "IC5"): 120,
     ("LIG", "NV", "IC5"): 120,
     ("NV", "LIG", "IC5"): 120,
-    ("SBL", "CORN","IC5"): 120,  # correct ✓
+    ("SBL", "CORN","IC5"): 120, 
     # R13
     ("NV",  "LIG", "R13"): 180,
     ("NE",  "SBL", "R13"): 180,
@@ -226,11 +226,12 @@ if __name__ == "__main__":
     print(f"Simulating day: {day}")
  
     tt = Timetable.from_dataframe(df_raw, day)
-    print(f"Loaded {len(tt.schedules)} train schedules\n")
+    print(f"Loaded {len(tt.schedules)} train schedules")
  
-    # ── Run 1: clear weather ──────────────────────────────────────────────────
-    print("══ Run 1: clear weather ══")
+    # -- Run 1: clear weather --------------------------------------------------
+    print("-- Run 1: clear weather --")
     day_rows = df_raw[df_raw['OPERATIONAL_DAY'] == day]
+    # Take the mean weather from that day
     weather_row = day_rows[["tre200s0", "fkl010z1", "fu3010z0", 
                             "rre150z0", "htoauts0", "hto000d0"]].mean()
     weather = WeatherConditions.from_meteoswiss_row(weather_row)
@@ -240,19 +241,19 @@ if __name__ == "__main__":
     r1.to_csv("simulator/normal_weather.csv")
     print(r1.summary())
  
-    # ── Run 2: winter storm ───────────────────────────────────────────────────
-    print("══ Run 2: winter storm ══")
+    # -- Run 2: winter storm ---------------------------------------------------
+    print("-- Run 2: winter storm --")
     
     #sim = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, weather, seed=42)
     #result = sim.run()
     # Feed result into GCN and compare predictions
-    storm = WeatherConditions(tree200s0=-4, fu3010z0=22, rre150z0=8, htoauts0=15)
+    storm = WeatherConditions(tree200s0=-4, fu3010z0=22, rre150z0=8, htoauts0=10)
     sim2  = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, storm, seed=42)
     r2    = sim2.run()
-    #r2.to_csv("winter_strom.csv")
+    r2.to_csv("simulator/winter_storm.csv")
     print(r2.summary())
  
-    # ── Run 3: wind sensitivity sweep ────────────────────────────────────────
-    print("══ Wind sensitivity sweep ══")
+    # -- Run 3: wind sensitivity sweep ----------------------------------------
+    print("-- Wind sensitivity sweep --")
     sweep = weather_sensitivity(tt, param="fu3010z0", seed=42)
     print(sweep.to_string(index=False))

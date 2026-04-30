@@ -26,7 +26,7 @@ from graph_models.station_graph.delay_dataset import DelayDataset
 
 # ── config (keep in sync with training.py) ────────────────────────────────────
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-DATA_PATH = "simulator/normal_weather.csv"
+DATA_PATH = "simulator/winter_storm.csv"
 
 
 STATION_FEATURE_COLS = [
@@ -144,11 +144,15 @@ print(f"\nTest  MAE : {mae:.1f} sec")
 print(f"Test RMSE : {rmse:.1f} sec")
 
 # ── plot one station ──────────────────────────────────────────────────────────
-STATION_IDX  = 1   # change to inspect different stations
+STATION_IDX  = None   # change to inspect different stations, or set to None to plot all errors
 WINDOW       = None  # number of timesteps to show (None = all)
 
-pred_series = preds[:, STATION_IDX]
-true_series = trues[:, STATION_IDX]
+if STATION_IDX is None:
+    pred_series = preds.ravel()
+    true_series = trues.ravel()
+else:
+    pred_series = preds[:, STATION_IDX]
+    true_series = trues[:, STATION_IDX]
 
 if WINDOW is not None:
     pred_series = pred_series[:WINDOW]
@@ -168,7 +172,7 @@ axes[0].plot([min_val, max_val], [min_val, max_val], "r--", linewidth=2, label="
 
 axes[0].set_xlabel("Actual Delay (seconds)")
 axes[0].set_ylabel("Predicted Delay (seconds)")
-axes[0].set_title(f"Predicted vs Actual Delays — {stations[STATION_IDX]}")
+axes[0].set_title(f"Predicted vs Actual Delays")
 axes[0].legend()
 axes[0].grid(True, alpha=0.3)
 
@@ -183,6 +187,6 @@ axes[1].set_title("Prediction Error Distribution")
 axes[1].legend()
 
 plt.tight_layout()
-plt.savefig("simulator/sim_eval_plot_scatter.png", dpi=150)
+plt.savefig("simulator/sim_eval_plot_scatter_winter_storm.png", dpi=150)
 plt.show()
 print("Plot saved to eval_plot.png")

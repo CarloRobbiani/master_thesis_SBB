@@ -24,7 +24,7 @@ class TrainProcess:
     2.  For each segment it traverses:
           a. Request the segment resource (single-track: capacity=1; double: capacity=∞)
           b. Travel time = planned_time / weather_speed_factor
-          c. Extra time = travel_time - planned_time  → logged as weather delay
+          c. Extra time = travel_time - planned_time  -> logged as weather delay
     3.  At each station:
           a. Check for switch failure (probabilistic, driven by snow)
           b. Enforce minimum dwell
