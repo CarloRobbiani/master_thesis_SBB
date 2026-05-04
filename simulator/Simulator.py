@@ -1,4 +1,4 @@
-from sim_weather import WeatherConditions
+from sim_weather import WeatherConditions, WeatherTimeline
 from sim_events import SimEvent, ConflictEvent
 from sim_topology import SEGMENTS, build_planned_segment_times
 from sim_timetable import Timetable
@@ -46,11 +46,15 @@ class RailwaySimulator:
         self,
         PLANNED_SEGMENT_TIMES,
         timetable: Timetable,
-        weather:   WeatherConditions = WeatherConditions(),
+        weather:   WeatherTimeline | WeatherConditions = WeatherConditions(),
         seed:      Optional[int]     = None,
     ):
         self.timetable = timetable
-        self.weather   = weather
+        # Normalise to WeatherTimeline so the rest of the code is uniform
+        if isinstance(weather, WeatherConditions):
+            self.weather = WeatherTimeline.from_single(weather)
+        else:
+            self.weather = weather
         if seed is not None:
             random.seed(seed)
         self.PLANNED_SEGMENT_TIMES = PLANNED_SEGMENT_TIMES
@@ -91,7 +95,7 @@ class RailwaySimulator:
                 env          = env,
                 schedule     = schedule,
                 resources    = resources,
-                weather      = self.weather,
+                weather      = self.weather,   # WeatherTimeline
                 sim_events   = sim_events,
                 conflict_log = conflict_log,
                 day_start    = day_start,
@@ -228,32 +232,28 @@ if __name__ == "__main__":
     tt = Timetable.from_dataframe(df_raw, day)
     print(f"Loaded {len(tt.schedules)} train schedules")
  
-    # -- Run 1: clear weather --------------------------------------------------
-    print("-- Run 1: clear weather --")
-    day_rows = df_raw[df_raw['OPERATIONAL_DAY'] == day]
-    # Take the mean weather from that day
+    # -- Build time-varying weather timeline from real MeteoSwiss data ---------
+    # Each snapshot corresponds to one unique timestamp in the day's data,
+    # giving sub-hourly resolution that matches your measurement cadence.
+    weather_timeline = WeatherTimeline.from_day_dataframe(df_raw, day)
+    print(f"Weather: {weather_timeline}")
+
+    # -- Run 1: real time-varying weather from dataset -------------------------
+    print("-- Run 1: real weather timeline --")
+    """ # Take the mean weather from that day
     weather_row = day_rows[["tre200s0", "fkl010z1", "fu3010z0", 
                             "rre150z0", "htoauts0", "hto000d0"]].mean()
-    weather = WeatherConditions.from_meteoswiss_row(weather_row)
-    sim1 = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, weather, seed=42)
-    #sim1 = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, WeatherConditions(), seed=42)
+    weather = WeatherConditions.from_meteoswiss_row(weather_row) 
+    """
+    sim1 = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, weather_timeline, seed=42)
     r1   = sim1.run()
     r1.to_csv("simulator/normal_weather.csv")
     print(r1.summary())
  
-    # -- Run 2: winter storm ---------------------------------------------------
+    # -- Run 2: winter storm (static, for comparison) --------------------------
     print("-- Run 2: winter storm --")
-    
-    #sim = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, weather, seed=42)
-    #result = sim.run()
-    # Feed result into GCN and compare predictions
-    storm = WeatherConditions(tree200s0=-4, fu3010z0=22, rre150z0=8, htoauts0=10)
+    storm = WeatherConditions(tre200s0=-4, fu3010z0=22, rre150z0=8, htoauts0=10)
     sim2  = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, storm, seed=42)
     r2    = sim2.run()
     r2.to_csv("simulator/winter_storm.csv")
     print(r2.summary())
- 
-    # -- Run 3: wind sensitivity sweep ----------------------------------------
-    print("-- Wind sensitivity sweep --")
-    sweep = weather_sensitivity(tt, param="fu3010z0", seed=42)
-    print(sweep.to_string(index=False))

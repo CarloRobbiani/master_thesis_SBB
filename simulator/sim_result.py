@@ -1,5 +1,4 @@
-
-from sim_weather import WeatherConditions
+from sim_weather import WeatherConditions, WeatherTimeline
 from sim_events import SimEvent, ConflictEvent
 from sim_topology import SEGMENTS, LINE_ORDER, STATIONS, PUNCTUALITY_SEC
 from typing import Optional
@@ -29,20 +28,26 @@ class SimResult:
         self,
         events:    list[SimEvent],
         conflicts: list[ConflictEvent],
-        weather:   WeatherConditions,
+        weather:   WeatherConditions | WeatherTimeline,
         day:       str,
     ):
         self.events    = events
         self.conflicts = conflicts
-        self.weather   = weather
+        # Store as WeatherTimeline internally; expose .weather_repr for display
+        if isinstance(weather, WeatherConditions):
+            self.weather = WeatherTimeline.from_single(weather)
+        else:
+            self.weather = weather
         self.day       = day
         self._df: Optional[pd.DataFrame] = None
  
     def to_dataframe(self) -> pd.DataFrame:
         if self._df is None:
             rows = []
+            # Use the day-median weather for the scalar export columns.
+            # Per-segment weather is already baked into simulated_delay values.
+            w = self.weather.representative()
             for e in self.events:
-                w = self.weather
                 rows.append({
                     "TRAIN_NUMBER":                         e.train_number,
                     "COMMERCIAL_LINE_NUMBER_DESIGNATION":   e.line,
@@ -58,7 +63,7 @@ class SimResult:
                     "SIMULATED_TIMESTAMP":    e.simulated_ts,
                     "SIMULATED_DELAY": e.simulated_delay,
                     "DAILY_PLAN_OPERATIONAL_DELAY_SEC":    e.actual_delay,
-                    "tre200s0": w.tree200s0,
+                    "tre200s0": w.tre200s0,
                     "fkl010z1": w.fkl010z1,
                     "fu3010z0": w.fu3010z0,
                     "rre150z0": w.rre150z0,

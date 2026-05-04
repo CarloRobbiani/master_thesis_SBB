@@ -1,14 +1,11 @@
 import simpy
 from sim_timetable import TrainSchedule, StopEntry
-from sim_weather import WeatherConditions
+from sim_weather import WeatherConditions, WeatherTimeline
 from sim_events import SimEvent, ConflictEvent
 from datetime import datetime, timedelta
 from sim_topology import SEGMENTS, Segment, LINE_ORDER, MIN_DWELL, STATIONS
 import random
 from typing import Optional
-import numpy as np
-
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SIMPY PROCESSES
@@ -38,7 +35,7 @@ class TrainProcess:
         env:         simpy.Environment,
         schedule:    TrainSchedule,
         resources:   dict[tuple[str, str], simpy.Resource],
-        weather:     WeatherConditions,
+        weather:     WeatherTimeline | WeatherConditions,
         sim_events:  list[SimEvent],
         conflict_log: list[ConflictEvent],
         day_start:   datetime,
@@ -46,7 +43,11 @@ class TrainProcess:
         self.env          = env
         self.schedule     = schedule
         self.resources    = resources
-        self.weather      = weather
+        # Normalise: always store a WeatherTimeline internally
+        if isinstance(weather, WeatherConditions):
+            self.weather = WeatherTimeline.from_single(weather)
+        else:
+            self.weather = weather
         self.sim_events   = sim_events
         self.conflict_log = conflict_log
         self.day_start    = day_start
@@ -104,8 +105,11 @@ class TrainProcess:
                     f"env.now={self.env.now:.0f} "
                     f"arr_planned={(self._ts_to_sim(arr_stop.planned_ts) if arr_stop else 'n/a')}") """
  
-                # Weather-adjusted travel time
-                weather_travel = self.weather.travel_time(segment, planned_travel)
+                # Weather-adjusted travel time — resolve conditions at the
+                # moment the train departs this segment (env.now after any
+                # headway wait), so rapidly-changing weather is captured.
+                current_weather = self.weather.at(self.env.now)
+                weather_travel = current_weather.travel_time(segment, planned_travel)
                 weather_extra  = weather_travel - planned_travel
  
                 # ── 2. ACQUIRE segment resource (blocks on single track) ────────
@@ -217,11 +221,12 @@ class TrainProcess:
             switch_causes = []
             if dep_stop is not None:
                 station = STATIONS.get(station_abbr)
-                if station and random.random() < self.weather.switch_failure_prob():
-                    extra = self.weather.switch_failure_delay_sec()
+                # Resolve weather at the current sim time for switch failure odds
+                current_weather = self.weather.at(self.env.now)
+                if station and random.random() < current_weather.switch_failure_prob():
+                    extra = current_weather.switch_failure_delay_sec()
                     yield self.env.timeout(extra)
-                    #self.current_delay += extra
-                    switch_causes.append(f"switch_failure(+{extra:.0f}s,snow={self.weather.htoauts0}cm)")
+                    switch_causes.append(f"switch_failure(+{extra:.0f}s,snow={current_weather.htoauts0}cm)")
  
             # ── 7. DEPARTURE ──────────────────────────────────────────────────
             if dep_stop is not None:
