@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from sim_topology import SEGMENTS, Segment, LINE_ORDER, MIN_DWELL, STATIONS
 import random
 from typing import Optional
+import numpy as np
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SIMPY PROCESSES
@@ -140,8 +141,8 @@ class TrainProcess:
                     )
 
                 # add noise
-                travel_noise = random.gauss(0, weather_travel * 0.01)  # 1% std
-                travel_noise = max(-15, min(15, travel_noise))
+                travel_noise = random.gauss(0, weather_travel * 0.05)  # 5% std
+                #travel_noise = max(-15, min(15, travel_noise))
                 yield self.env.timeout(weather_travel + travel_noise)
  
                 # Release segment
@@ -157,11 +158,16 @@ class TrainProcess:
                 # If this is the very first event and no travel has happened yet,
                 # the train is arriving from outside the corridor. Wait until the
                 # planned arrival time before recording it.
+
+                # TODO ask where to put
+                """ first_dep = next((s for s in stops if s.event_type == "departure"), None)
+                if first_dep and not np.isnan(first_dep.actual_delay):
+                    self.current_delay = first_dep.actual_delay  # seed from ground truth """
+
                 if prev_station is None:
                     wait = max(0, arr_planned_sim - self.env.now)
                     yield self.env.timeout(wait)
-            
-
+                
                 arr_actual_sim  = self.env.now
                 arr_delay       = arr_actual_sim - arr_planned_sim
                 self.current_delay = arr_delay
@@ -209,11 +215,22 @@ class TrainProcess:
                     dwell = target_dep - self.env.now
                     yield self.env.timeout(dwell)
 
-
             elif dep_stop is not None and arr_stop is None:
                 dep_planned_sim = self._ts_to_sim(dep_stop.planned_ts)
                 wait = max(0, dep_planned_sim - self.env.now)
                 yield self.env.timeout(wait)
+                # Seed with the real initial delay if available
+                import math
+                if not math.isnan(dep_stop.actual_delay):
+                    self.current_delay = dep_stop.actual_delay
+                    yield self.env.timeout(max(0, dep_stop.actual_delay))
+
+            """ elif dep_stop is not None and arr_stop is None:
+                dep_planned_sim = self._ts_to_sim(dep_stop.planned_ts)
+                wait = max(0, dep_planned_sim - self.env.now)
+                yield self.env.timeout(wait) """
+            
+            
             
 
  

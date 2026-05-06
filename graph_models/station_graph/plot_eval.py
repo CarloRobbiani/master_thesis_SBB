@@ -15,10 +15,13 @@ from torch.utils.data import DataLoader
 from stationMATGCN import StationMATGCN
 from utils import load_and_pivot, normalize, prepare_laplacian
 from delay_dataset import DelayDataset
+import pandas as pd
 
 # ── config (keep in sync with training.py) ────────────────────────────────────
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DATA_PATH = os.path.join("data", "train_data_weather.parquet")
+
+
 
 STATION_FEATURE_COLS = [
     "EVENT_TYPE",
@@ -98,6 +101,11 @@ model.eval()
 station_list_path = os.path.join("data", "station_list.csv")
 laplacian = prepare_laplacian(station_list_path, DEVICE)
 
+station_df = pd.read_csv("data/station_list.csv", header=None)
+
+station_names = station_df.iloc[0].tolist()   # full names
+station_codes = station_df.iloc[1].tolist()   # short codes
+
 # ── inference ─────────────────────────────────────────────────────────────────
 all_preds, all_trues = [], []
 
@@ -168,3 +176,30 @@ plt.tight_layout()
 plt.savefig("images/eval_plot_scatter.png", dpi=150)
 plt.show()
 print("Plot saved to eval_plot.png")
+
+
+# ---- per-station metrics -----
+mae_per_station  = np.abs(preds - trues).mean(axis=0)   # (N,)
+rmse_per_station = np.sqrt(((preds - trues) ** 2).mean(axis=0))
+
+# Sort stations by error (optional but useful)
+sorted_idx = np.argsort(mae_per_station)[::-1]  # descending
+mae_sorted = mae_per_station[sorted_idx]
+station_names_sorted = [stations[i] for i in sorted_idx]
+errors = preds - trues   # shape: (num_samples, N)
+
+plt.figure(figsize=(16, 6))
+
+plt.boxplot(
+    errors,
+    labels=[station_names[i] for i in sorted_idx],
+    showfliers=False   # optional: hides extreme outliers (cleaner)
+)
+
+plt.xticks(rotation=90, fontsize=8)
+plt.ylabel("Prediction Error (seconds)")
+plt.title("Error Distribution per Station")
+
+plt.tight_layout()
+plt.savefig("images/boxplot_per_station.png", dpi=150)
+plt.show()

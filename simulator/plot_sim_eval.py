@@ -26,7 +26,7 @@ from graph_models.station_graph.delay_dataset import DelayDataset
 
 # ── config (keep in sync with training.py) ────────────────────────────────────
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-DATA_PATH = "simulator/winter_storm.csv"
+DATA_PATH = "simulator/normal_weather.csv"
 
 
 STATION_FEATURE_COLS = [
@@ -187,6 +187,6 @@ axes[1].set_title("Prediction Error Distribution")
 axes[1].legend()
 
 plt.tight_layout()
-plt.savefig("simulator/sim_eval_plot_scatter_winter_storm.png", dpi=150)
+plt.savefig("simulator/sim_eval_plot_scatter_normal.png", dpi=150)
 plt.show()
 print("Plot saved to eval_plot.png")
