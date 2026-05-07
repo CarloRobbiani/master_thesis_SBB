@@ -82,6 +82,44 @@ plt.savefig("images/Xgboost_comparison.png")
 plt.show()
 
 
+# --- Hourly delay and error analysis ---
+test_df = df.iloc[val_end:].copy()
+test_df["predicted"] = prediction[:, 0]
+test_df["actual"] = y_test.values
+test_df["abs_error"] = np.abs(test_df["predicted"] - test_df["actual"])
+test_df["hour"] = test_df["OPERATION_PLANNED_TIMESTAMP"].dt.hour
+
+hourly = test_df.groupby("hour").agg(
+    avg_actual=("actual", "mean"),
+    avg_predicted=("predicted", "mean"),
+    avg_error=("abs_error", "mean")
+).reset_index()
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+# Left: actual vs predicted delay by hour
+axes[0].plot(hourly["hour"], hourly["avg_actual"], label="Actual", marker="o")
+axes[0].plot(hourly["hour"], hourly["avg_predicted"], label="Predicted", marker="o")
+axes[0].set_xlabel("Hour of Day")
+axes[0].set_ylabel("Average Delay (seconds)")
+axes[0].set_title("Average Delay by Hour of Day")
+axes[0].set_xticks(range(0, 24))
+axes[0].legend()
+axes[0].grid(True, alpha=0.3)
+
+# Right: average absolute error by hour
+axes[1].bar(hourly["hour"], hourly["avg_error"], color="tomato", alpha=0.8)
+axes[1].set_xlabel("Hour of Day")
+axes[1].set_ylabel("Mean Absolute Error (seconds)")
+axes[1].set_title("Model Error by Hour of Day")
+axes[1].set_xticks(range(0, 24))
+axes[1].grid(True, alpha=0.3, axis="y")
+
+plt.tight_layout()
+plt.savefig("images/hourly_delay_analysis.png")
+plt.show()
+
+
 
 mae_error = mean_absolute_error(y_test,prediction)
 rmse_error = root_mean_squared_error(y_test, prediction)
@@ -99,9 +137,11 @@ print(f"Root mean squared error: {rmse_error}")
     plt.title(feature)
     plt.show() """
 
-importance_df = my_xgboost.feature_importance(
-    feature_names=X.columns.tolist(),
-    importance_type="gain"
+
+importance_df = my_xgboost.permutation_importance(
+    X_sample=X_test,
+    Y_sample=y_test,
+    n_repeats=5
 )
 
 print(importance_df.head(10))

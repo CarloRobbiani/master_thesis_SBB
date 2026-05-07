@@ -207,6 +207,54 @@ plt.savefig("images/eval_plot_scatter.png", dpi=150)
 plt.show()
 print("Plot saved to eval_plot.png")
 
+# --- Hourly delay and error analysis ---
+# Reconstruct timestamps for the test split
+raw_df = pd.read_parquet(DATA_PATH)
+raw_df = raw_df.sort_values("OPERATION_PLANNED_TIMESTAMP")
+timestamps = raw_df["OPERATION_PLANNED_TIMESTAMP"].iloc[t_val + SEQ_LEN:].reset_index(drop=True)
+
+# preds and trues are (num_samples, N) — average across stations for hourly analysis
+pred_mean = preds.mean(axis=1)   # (num_samples,)
+true_mean = trues.mean(axis=1)
+
+# Trim timestamps to match (dataset drops last HORIZON rows)
+timestamps = timestamps.iloc[:len(pred_mean)].reset_index(drop=True)
+
+hourly_df = pd.DataFrame({
+    "hour":      timestamps.dt.hour,
+    "predicted": pred_mean,
+    "actual":    true_mean,
+    "abs_error": np.abs(pred_mean - true_mean)
+})
+
+hourly = hourly_df.groupby("hour").agg(
+    avg_actual=("actual", "mean"),
+    avg_predicted=("predicted", "mean"),
+    avg_error=("abs_error", "mean")
+).reset_index()
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+axes[0].plot(hourly["hour"], hourly["avg_actual"], label="Actual", marker="o")
+axes[0].plot(hourly["hour"], hourly["avg_predicted"], label="Predicted", marker="o")
+axes[0].set_xlabel("Hour of Day")
+axes[0].set_ylabel("Average Delay (seconds)")
+axes[0].set_title("Average Delay by Hour of Day")
+axes[0].set_xticks(range(0, 24))
+axes[0].legend()
+axes[0].grid(True, alpha=0.3)
+
+axes[1].bar(hourly["hour"], hourly["avg_error"], color="tomato", alpha=0.8)
+axes[1].set_xlabel("Hour of Day")
+axes[1].set_ylabel("Mean Absolute Error (seconds)")
+axes[1].set_title("Model Error by Hour of Day")
+axes[1].set_xticks(range(0, 24))
+axes[1].grid(True, alpha=0.3, axis="y")
+
+plt.tight_layout()
+plt.savefig("images/hourly_delay_analysis_matgcn.png")
+plt.show()
+
 
 # ---- per-station metrics -----
 mae_per_station  = np.abs(preds - trues).mean(axis=0)   # (N,)

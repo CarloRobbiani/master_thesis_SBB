@@ -2,6 +2,8 @@ import xgboost as xgb
 import numpy as np
 import pandas as pd
 import shap
+from sklearn.metrics import mean_absolute_error
+import numpy as np
 
 class XGBoostBaseline:
     def __init__(self, params=None):
@@ -113,57 +115,42 @@ class XGBoostBaseline:
             return Y_pred
         
 
-    def feature_importance(self, feature_names=None, importance_type="gain", aggregate="mean"):
-        """
-        Extract feature importance for each horizon model.
+    def permutation_importance(self, X_sample, Y_sample, n_repeats=5, metric="mae"):
 
-        Parameters:
-            feature_names : list of str
-            importance_type : 'gain', 'weight', 'cover'
-            aggregate : 'mean' or 'sum'
+        if isinstance(X_sample, pd.DataFrame):
+            X_arr = X_sample.values
+            feature_names = X_sample.columns.tolist()
+        else:
+            X_arr = X_sample
+            feature_names = [f"f{i}" for i in range(X_arr.shape[1])]
 
-        Returns:
-            pd.DataFrame with importance per feature
-        """
+        baseline_pred = self.predict(X_sample)
+        baseline_score = mean_absolute_error(Y_sample, baseline_pred)
 
-        all_importances = []
+        importances = np.zeros((len(feature_names), n_repeats))
 
-        for model in self.models:
-            booster = model.get_booster()
-            score = booster.get_score(importance_type=importance_type)
+        for i in range(len(feature_names)):
+            for r in range(n_repeats):
+                X_permuted = X_arr.copy()
+                X_permuted[:, i] = np.random.permutation(X_permuted[:, i])
 
-            # Convert to full vector
-            if feature_names is None:
-                n_features = model.n_features_in_
-                feature_names = [f"f{i}" for i in range(n_features)]
+                if isinstance(X_sample, pd.DataFrame):
+                    X_perm_df = pd.DataFrame(X_permuted, columns=feature_names)
+                    perm_pred = self.predict(X_perm_df)
+                else:
+                    perm_pred = self.predict(X_permuted)
 
-            imp = np.zeros(len(feature_names))
-            for i, fname in enumerate(feature_names):
-                key = f"f{i}"
-                imp[i] = score.get(key, 0.0)
-            
-            """ for fname, val in score.items():
-                idx = feature_names.index(fname)
-                imp[idx] = val """
+                perm_score = mean_absolute_error(Y_sample, perm_pred)
+                importances[i, r] = perm_score - baseline_score  # higher = more important
 
-            all_importances.append(imp)
+        mean_imp = importances.mean(axis=1)
+        std_imp = importances.std(axis=1)
 
-        all_importances = np.array(all_importances)
-
-        all_importances = all_importances / all_importances.sum(axis=1, keepdims=True)
-        final_importance = all_importances.mean(axis=0)
-
-        """ if aggregate == "mean":
-            final_importance = all_importances.mean(axis=0)
-        elif aggregate == "sum":
-            final_importance = all_importances.sum(axis=0) """
-
-        df = pd.DataFrame({
+        return pd.DataFrame({
             "feature": feature_names,
-            "importance": final_importance
+            "importance": mean_imp,
+            "std": std_imp
         }).sort_values("importance", ascending=False)
-
-        return df
     
     def shap_importance(self, X_sample):
         shap_values_all = []
