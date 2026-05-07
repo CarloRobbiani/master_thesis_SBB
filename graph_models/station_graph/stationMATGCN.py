@@ -31,7 +31,7 @@ class StationMATGCN(nn.Module):
 
         self.output_layer = nn.Linear(hidden_dim, horizon)
 
-    def forward(self, x, external, laplacian):
+    def forward(self, x, external, laplacian, return_att=False):
         # x: [B, T, N, F]
         # external: [B, T, E]
 
@@ -41,12 +41,19 @@ class StationMATGCN(nn.Module):
         x = torch.cat([x, external], dim=-1)
 
         x = self.input_proj(x)
+        feat_weigths_all = []
 
         for block in self.blocks:
-            x = block(x, laplacian)
+            if return_att: 
+                x, feat_w = block(x, laplacian, return_att=True)
+                feat_weigths_all.append(feat_w)
+            else:
+                x = block(x, laplacian, return_att=False)
 
         out = self.output_layer(x[:, -1])
         #out = self.output_layer(x.mean(dim=1))
         #out = self.output_layer(x)
         #return out.transpose(1, 2)
+        if return_att:
+            return out, feat_weigths_all
         return out

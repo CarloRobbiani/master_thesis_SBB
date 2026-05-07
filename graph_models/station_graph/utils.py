@@ -43,9 +43,11 @@ class FeatureAttention(nn.Module):
         super().__init__()
         self.fc = nn.Linear(feature_dim, feature_dim)
 
-    def forward(self, x):
+    def forward(self, x, return_weights=False):
         # x: [B, T, N, F]
         weights = torch.softmax(self.fc(x), dim=-1)
+        if return_weights: 
+            return x * weights, weights
         return x * weights
 
 class TemporalAttention(nn.Module):
@@ -86,12 +88,15 @@ class STBlock(nn.Module):
         self.dropout = nn.Dropout(p=dropout)
         self.norm = nn.LayerNorm(hidden_dim)
 
-    def forward(self, x, laplacian):
+    def forward(self, x, laplacian, return_att):
         # x: [B, T, N, F]
 
         residual = x
 
-        x = self.feature_att(x)
+        if return_att:
+            x, feat_w = self.feature_att(x, return_weights=True)
+        else:
+            x = self.feature_att(x)
         x = self.temporal_att(x)
 
         x = self.graph_conv(x, laplacian)
@@ -101,7 +106,11 @@ class STBlock(nn.Module):
         x = self.dropout(x)
         x = x.permute(0, 2, 3, 1)
 
-        return self.norm(x + residual)
+        out = self.norm(x + residual)
+
+        if return_att:
+            return out, feat_w
+        return out
 
     
 def compute_laplacian(adj):
@@ -148,51 +157,6 @@ def filter_tensors(data_tensor: torch.tensor, train_end, val_end, timestamps):
     test = data_tensor[test_idx]
 
     return train, val, test
-
-
-def evaluate(model, dataloader, laplacian, criterion, device):
-
-    model.eval()
-
-    total_loss = 0
-    total_samples = 0
-
-    all_preds = []
-    all_targets = []
-
-    with torch.no_grad():
-
-        for x, e, y, m in dataloader:
-
-            x = x.to(device)
-            e = e.to(device)
-            y = y.to(device)
-            y = y.permute(0, 2, 1)
-            m = m.to(device)
-            m = m.permute(0, 2, 1)
-
-            pred = model(x, e, laplacian)
-
-            loss = ((pred - y) ** 2) * m
-            loss = loss.sum() / (m.sum() + 1e-6)
-
-            batch_size = x.shape[0]
-
-            total_loss += loss.item() * batch_size
-            total_samples += batch_size
-
-            all_preds.append(pred[m].cpu())
-            all_targets.append(y[m].cpu())
-
-    all_preds = torch.cat(all_preds).cpu().numpy()
-    all_targets = torch.cat(all_targets).cpu().numpy()
-
-    all_preds = all_preds.reshape(-1)
-    all_targets = all_targets.reshape(-1)
-
-    rmse = root_mean_squared_error(all_targets, all_preds)
-
-    return total_loss / total_samples, rmse
 
 
 def load_and_pivot(path:str, STATION_FEATURE_COLS, EXTERNAL_COLS):
@@ -357,3 +321,100 @@ def normalize(train_arr, val_arr, test_arr):
         sh = arr.shape
         return scaler.transform(arr.reshape(-1, F)).reshape(sh)
     return _transform(train_arr), _transform(val_arr), _transform(test_arr), scaler
+
+def permute_station_feature(x, feature_idx):
+    x_perm = x.clone()
+
+    perm = torch.randperm(x.size(0))  # shuffle across batch
+
+    # IMPORTANT: use ORIGINAL x, not x_perm
+    x_perm[..., feature_idx] = x[perm, ..., feature_idx]
+
+    return x_perm
+
+def permute_external_feature(ext, feature_idx):
+    ext_perm = ext.clone()
+
+    perm = torch.randperm(ext.size(0))
+
+    ext_perm[..., feature_idx] = ext[perm, ..., feature_idx]
+
+    return ext_perm
+
+def permutation_importance(
+    model,
+    loader,
+    laplacian,
+    station_feature_names,
+    external_feature_names,
+    tg_min
+):
+    baseline_losses = []
+
+    with torch.no_grad():
+        for x, ext, y in loader:
+            x = x.cpu()
+            ext = ext.cpu()
+            y = y.cpu()
+
+            loss = compute_mae_seconds(model, x, ext, y, laplacian, tg_min)
+            baseline_losses.append(loss)
+
+    baseline = np.mean(baseline_losses)
+
+    print(f"Baseline MAE: {baseline:.4f}")
+
+    importances = {}
+
+    # ---- Station features ----
+    for i, name in enumerate(station_feature_names):
+        losses = []
+
+        with torch.no_grad():
+            for x, ext, y in loader:
+                x, ext, y = x.cpu(), ext.cpu(), y.cpu()
+
+                x_perm = permute_station_feature(x, i)
+
+                loss = compute_mae_seconds(model, x_perm, ext, y, laplacian, tg_min)
+
+                losses.append(loss)
+
+        perm_loss = np.mean(losses)
+        importances[name] = perm_loss - baseline
+
+        print(f"{name:40s} +{importances[name]:.5f}")
+
+    # ---- External features ----
+    for i, name in enumerate(external_feature_names):
+        losses = []
+
+        with torch.no_grad():
+            for x, ext, y in loader:
+                x, ext, y = x.cpu(), ext.cpu(), y.cpu()
+
+                ext_perm = permute_external_feature(ext, i)
+
+                loss = compute_mae_seconds(model, x, ext_perm, y, laplacian, tg_min)
+
+                losses.append(loss)
+
+        perm_loss = np.mean(losses)
+        importances[name] = perm_loss - baseline
+
+        print(f"{name:40s} +{importances[name]:.5f}")
+
+    return importances
+
+
+def compute_mae_seconds(model, x, ext, y, laplacian, tg_min):
+    pred, _ = model(x, ext, laplacian, return_att = True)
+    pred = pred.mean(dim=-1)
+
+    pred = pred.detach().cpu().numpy()
+    y = y.detach().cpu().numpy()
+
+    pred_sec = np.expm1(pred) + tg_min
+    y_sec    = np.expm1(y) + tg_min
+
+    return np.abs(pred_sec - y_sec).mean()

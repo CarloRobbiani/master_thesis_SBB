@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 
 from stationMATGCN import StationMATGCN
-from utils import load_and_pivot, normalize, prepare_laplacian
+from utils import load_and_pivot, normalize, prepare_laplacian, permutation_importance
 from delay_dataset import DelayDataset
 import pandas as pd
 
@@ -96,42 +96,72 @@ model = StationMATGCN(
 ).to(DEVICE)
 
 model.load_state_dict(torch.load("graph_models\station_graph/best_matgcn.pt", map_location=DEVICE))
-model.eval()
 
 station_list_path = os.path.join("data", "station_list.csv")
 laplacian = prepare_laplacian(station_list_path, DEVICE)
 
-station_df = pd.read_csv("data/station_list.csv", header=None)
+def eval_model(model, loader, laplacian):
+    model.eval()
 
-station_names = station_df.iloc[0].tolist()   # full names
-station_codes = station_df.iloc[1].tolist()   # short codes
+    # ── inference ─────────────────────────────────────────────────────────────────
+    all_preds, all_trues, all_weigths = [], [], []
 
-# ── inference ─────────────────────────────────────────────────────────────────
-all_preds, all_trues = [], []
+    with torch.no_grad():
+        for x, ext, y in loader:
+            x, ext, y = x.to(DEVICE), ext.to(DEVICE), y.to(DEVICE)
+            pred, feat_weights = model(x, ext, laplacian, return_att=True)   # (B, N)
+            pred = pred.mean(dim=-1)
+            all_preds.append(pred.cpu().numpy())
+            all_trues.append(y.cpu().numpy())
+            all_weigths.append(feat_weights)
 
-with torch.no_grad():
-    for x, ext, y in test_loader:
-        x, ext, y = x.to(DEVICE), ext.to(DEVICE), y.to(DEVICE)
-        pred = model(x, ext, laplacian).mean(dim=-1)   # (B, N)
-        all_preds.append(pred.cpu().numpy())
-        all_trues.append(y.cpu().numpy())
+    preds_log = np.concatenate(all_preds)   # (num_samples, N)
+    trues_log = np.concatenate(all_trues)
 
-preds_log = np.concatenate(all_preds)   # (num_samples, N)
-trues_log = np.concatenate(all_trues)
+    # ── invert log transform → seconds ───────────────────────────────────────────
+    preds = from_log(preds_log)
+    trues = from_log(trues_log)
 
-# ── invert log transform → seconds ───────────────────────────────────────────
-preds = from_log(preds_log)
-trues = from_log(trues_log)
+    weights = []
+    for batch in all_weigths:
+        for block_w in batch:
+            weights.append(block_w.cpu())
 
-# ── metrics ───────────────────────────────────────────────────────────────────
-mae  = float(np.abs(preds - trues).mean())
-rmse = float(np.sqrt(((preds - trues) ** 2).mean()))
-print(f"\nTest  MAE : {mae:.1f} sec")
-print(f"Test RMSE : {rmse:.1f} sec")
+    weights = torch.cat(weights, dim=0)
+    feat_importance = weights.mean(dim=(0,1,2))
+    all_station_cols = STATION_FEATURE_COLS + ["target_arr"]
+    feature_names = STATION_FEATURE_COLS + ["target_arr"] + EXTERNAL_COLS
+    """for name, score in zip(feature_names, feat_importance):
+        print(f"{name}: {score:.4f}") """
+
+    # ── metrics ───────────────────────────────────────────────────────────────────
+    mae  = float(np.abs(preds - trues).mean())
+    rmse = float(np.sqrt(((preds - trues) ** 2).mean()))
+    print(f"\nTest  MAE : {mae:.1f} sec")
+    print(f"Test RMSE : {rmse:.1f} sec")
+
+    return preds, trues, mae
+
+preds, trues, mae = eval_model(model, test_loader, laplacian)
+station_feature_names = STATION_FEATURE_COLS + ["target_arr"]
+external_feature_names = EXTERNAL_COLS
+importances = permutation_importance(
+    model,
+    test_loader,
+    laplacian,
+    station_feature_names,
+    external_feature_names,
+    tg_min
+)
+print(importances)
 
 # ── plot one station ──────────────────────────────────────────────────────────
 STATION_IDX  = None   # change to inspect different stations, or set to None to plot all errors
 WINDOW       = None  # number of timesteps to show (None = all)
+
+station_df = pd.read_csv("data/station_list.csv", header=None)
+station_names = station_df.iloc[0].tolist()   # full names
+station_codes = station_df.iloc[1].tolist()   # short codes
 
 if STATION_IDX is None:
     pred_series = preds.ravel()
