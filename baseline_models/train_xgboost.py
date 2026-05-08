@@ -88,6 +88,7 @@ test_df["predicted"] = prediction[:, 0]
 test_df["actual"] = y_test.values
 test_df["abs_error"] = np.abs(test_df["predicted"] - test_df["actual"])
 test_df["hour"] = test_df["OPERATION_PLANNED_TIMESTAMP"].dt.hour
+test_df["errors"] = test_df["predicted"] - test_df["actual"]
 
 hourly = test_df.groupby("hour").agg(
     avg_actual=("actual", "mean"),
@@ -117,6 +118,36 @@ axes[1].grid(True, alpha=0.3, axis="y")
 
 plt.tight_layout()
 plt.savefig("images/hourly_delay_analysis.png")
+plt.show()
+
+# ---- per-station metrics -----
+
+per_station = test_df.groupby("OPERATING_POINT_ABBREVIATION").agg(
+    avg_actual=("actual", "mean"),
+    avg_predicted=("predicted", "mean"),
+    avg_error=("abs_error", "mean")
+).reset_index()
+
+# Collect errors per station
+station_groups = test_df.groupby("OPERATING_POINT_ABBREVIATION")["errors"]
+
+data = [group.values for _, group in station_groups]
+labels = [station for station, _ in station_groups]
+
+plt.figure(figsize=(16, 6))
+
+plt.boxplot(
+    data,
+    labels=labels,
+    showfliers=False
+)
+
+plt.xticks(rotation=90, fontsize=8)
+plt.ylabel("Prediction Error (seconds)")
+plt.title("Error Distribution per Station (XGBoost)")
+
+plt.tight_layout()
+plt.savefig("images/boxplot_per_station.png", dpi=150)
 plt.show()
 
 

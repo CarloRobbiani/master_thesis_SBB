@@ -276,8 +276,8 @@ plt.boxplot(
 
 plt.xticks(rotation=90, fontsize=8)
 plt.ylabel("Prediction Error (seconds)")
-plt.title("Error Distribution per Station")
+plt.title("Error Distribution per Station (MATGCN)")
 
 plt.tight_layout()
-plt.savefig("images/boxplot_per_station.png", dpi=150)
+plt.savefig("images/boxplot_per_station_matgcn.png", dpi=150)
 plt.show()
