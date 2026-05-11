@@ -150,12 +150,11 @@ plt.tight_layout()
 plt.savefig("images/boxplot_per_station.png", dpi=150)
 plt.show()
 
-
-
 mae_error = mean_absolute_error(y_test,prediction)
 rmse_error = root_mean_squared_error(y_test, prediction)
 print(f"Mean absolute error: {mae_error}")
 print(f"Root mean squared error: {rmse_error}")
+
 
 """ for feature in ["fu3010z0", "fkl010z1", "hour_cos"]:
     dep_df = my_xgboost.shap_dependence(X_test[:500], feature)

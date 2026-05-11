@@ -24,7 +24,7 @@ def connect_weather_stations(weather_file = None, connectionfile=None, train_fil
     train_df = train_df.dropna()
     
 
-    #split datasets
+    # split datasets
     train_df_ne = train_df[train_df["OPERATING_POINT_ABBREVIATION"].isin(json_weather["Neuchatel"])]
     train_df_gre = train_df[train_df["OPERATING_POINT_ABBREVIATION"].isin(json_weather["Grenchen"])]
 
@@ -65,7 +65,6 @@ def prepare_neuchatel():
 
     filtered_df = filtered_df[cols_to_keep]
     filtered_df["days"] = filtered_df['date'].dt.date
-    #filtered_df.head()
 
     # Merge with snow data
     neu_snow = pd.read_csv("data\weather/neu_snow.csv", delimiter=";", header=0)
@@ -78,8 +77,6 @@ def prepare_neuchatel():
     filtered_df_snow = neu_snow[mask_snow]
     filtered_neu_snow = filtered_df_snow[cols_to_keep]
     filtered_neu_snow["days"] = filtered_neu_snow["date"].dt.date
-    #print(filtered_neu_snow.head())
-
 
     merged_neu = pd.merge(filtered_df, filtered_neu_snow[['days', 'hto000d0']], on='days', how='left') 
     return merged_neu
@@ -98,10 +95,6 @@ def prepare_grenchen():
     filtered_df = df[mask]
 
     filtered_df = filtered_df[cols_to_keep]
-    #filtered_df.head()
-
-    
-
     return filtered_df
 
 
