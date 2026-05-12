@@ -2,7 +2,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 
-df_sim = pd.read_csv("simulator\sbi_calibrated_2025-01-01.csv")
+df_sim = pd.read_csv("simulator\data/sbi_calibrated_2025-01-01.csv")
+#df_sim = pd.read_csv("simulator/data/normal_weather.csv")
 df_sim["OPERATION_PLANNED_TIMESTAMP"] = pd.to_datetime(df_sim["OPERATION_PLANNED_TIMESTAMP"], format="%Y-%m-%d %H:%M:%S", utc=True)
 df_sim = df_sim.sort_values(by="OPERATION_PLANNED_TIMESTAMP")
 
@@ -52,5 +53,5 @@ axes[1].set_title("Prediction Error Distribution")
 axes[1].legend()
 
 plt.tight_layout()
-plt.savefig("simulator\eval_simulator_vs_actual.png")
+plt.savefig("simulator\images/eval_learned_simulator_vs_actual.png")
 plt.show()

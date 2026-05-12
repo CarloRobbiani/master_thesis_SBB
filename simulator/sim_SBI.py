@@ -800,21 +800,33 @@ if __name__ == "__main__":
 
     print(f"Running SBI on day {day} with {n_sims} simulations …\n")
 
-    posterior, x_obs = run_sbi(
+    """ posterior, x_obs = run_sbi(
         df_raw=df_raw,
         day=day,
         PLANNED_SEGMENT_TIMES=PLANNED_SEGMENT_TIMES,
         speed_factors=speed_factors,
         num_simulations=n_sims,
         seed=42,
+    ) """
+
+    list_of_days = ["2025-01-01", "2025-01-20", "2025-02-15", "2025-03-15"]
+    posterior, x_obs_dict, x_obs_mean = run_sbi_multiday(
+        df_raw=df_raw,
+        days=list_of_days,
+        PLANNED_SEGMENT_TIMES=PLANNED_SEGMENT_TIMES,
+        speed_factors=speed_factors,
+        num_simulations_per_day=n_sims,
+        seed=42,
     )
 
     # Sample from the posterior
-    samples = posterior.sample((2000,), x=x_obs)
+    #samples = posterior.sample((2000,), x=x_obs) # Use this LOC for single day sim
+    #samples = posterior.sample((2000,), x=x_obs_mean)
+    samples = posterior.sample((2000,), x=x_obs_dict["2025-01-01"])
     posterior_summary(samples)
 
     prior = make_prior()
-    plot_posterior(samples, prior, save_path="simulator/posterior_pairplot.png")
+    plot_posterior(samples, prior, save_path="simulator/images/posterior_pairplot.png")
 
     # Save MAP estimate into the "learned" block of the JSON
     speed_factors = save_learned_params(samples, speed_factors, json_path=json_path)
@@ -825,4 +837,4 @@ if __name__ == "__main__":
     result = run_with_params(map_theta, df_raw, day, PLANNED_SEGMENT_TIMES,
                              speed_factors=speed_factors)
     print(result.summary())
-    result.to_csv(f"simulator/sbi_calibrated_{day}.csv")
+    result.to_csv(f"simulator/data/sbi_calibrated_{day}.csv")

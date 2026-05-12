@@ -258,7 +258,7 @@ if __name__ == "__main__":
     """
     sim1 = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, weather_timeline, seed=42)
     r1   = sim1.run()
-    r1.to_csv("simulator/normal_weather.csv")
+    r1.to_csv("simulator/data/normal_weather.csv")
     print(r1.summary())
  
     # -- Run 2: winter storm (static, for comparison) --------------------------
@@ -266,5 +266,5 @@ if __name__ == "__main__":
     storm = WeatherConditions(tre200s0=-4, fu3010z0=22, rre150z0=8, htoauts0=10, speed_factors=speed_factors)
     sim2  = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, storm, seed=42)
     r2    = sim2.run()
-    r2.to_csv("simulator/winter_storm.csv")
+    r2.to_csv("simulator/data/winter_storm.csv")
     print(r2.summary())
