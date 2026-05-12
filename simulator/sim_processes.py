@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from sim_topology import SEGMENTS, Segment, LINE_ORDER, MIN_DWELL, STATIONS
 import random
 from typing import Optional
-import numpy as np
+import json
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SIMPY PROCESSES
@@ -40,6 +40,7 @@ class TrainProcess:
         sim_events:  list[SimEvent],
         conflict_log: list[ConflictEvent],
         day_start:   datetime,
+        param_type : str
     ):
         self.env          = env
         self.schedule     = schedule
@@ -55,6 +56,10 @@ class TrainProcess:
         self.current_delay = 0.0    # seconds, positive = late
         self.PLANNED_SEGMENT_TIMES = PLANNED_SEGMENT_TIMES
         self.category = schedule.category
+        self.param_type = param_type
+
+        with open("simulator\weather_factors.json") as f:
+            self.speed_factors = json.load(f)
  
     def _ts_to_sim(self, ts: datetime) -> float:
         """Convert a datetime to SimPy clock time (seconds from midnight)."""
@@ -141,8 +146,8 @@ class TrainProcess:
                     )
 
                 # add noise
-                travel_noise = random.gauss(0, weather_travel * 0.05)  # 5% std
-                #travel_noise = max(-15, min(15, travel_noise))
+                travel_factor = self.speed_factors[self.param_type]["sigma_travel"]
+                travel_noise = random.gauss(0, weather_travel * travel_factor)  # 5% std
                 yield self.env.timeout(weather_travel + travel_noise)
  
                 # Release segment
@@ -210,7 +215,8 @@ class TrainProcess:
                     min_dwell    = MIN_DWELL.get(dep_stop.stop_type, 30)
                     earliest_dep = self.env.now + min_dwell
                     target_dep   = max(earliest_dep, dep_planned_sim)
-                    dwell_noise  = abs(random.gauss(0, 5))
+                    dwell_factor = self.speed_factors[self.param_type]["sigma_dwell"]
+                    dwell_noise  = abs(random.gauss(0, dwell_factor)) 
                     target_dep  += dwell_noise
                     dwell = target_dep - self.env.now
                     yield self.env.timeout(dwell)

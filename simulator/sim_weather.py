@@ -3,6 +3,7 @@ from sim_topology import Segment
 import random
 import pandas as pd
 import numpy as np
+import json
 
 # ══════════════════════════════════════════════════════════════════════════════
 # WEATHER
@@ -21,6 +22,8 @@ class WeatherConditions:
     precip_mm     : precipitation in mm/h.  > 0 extends braking distances.
     snow_cm       : fresh snow depth (cm).  > 5 increases switch failure risk.
     visibility_m  : visibility (m).  < 200 triggers fog speed restriction.
+    weather_type  : the type of weather (normal, snow, learned)
+    weather_factor: points to the json while where the weather factors are encoded
     """
     tre200s0:  float = 15.0 # Air temp
     fkl010z1:   float = 0.0  # Gust peak
@@ -28,43 +31,47 @@ class WeatherConditions:
     rre150z0:   float = 0.0  # Precipation
     htoauts0:   float = 0.0  # Snow height Biel
     hto000d0:   float = 0.0  # Snow height Neuchatel
+    param_type: str = "normal"
+    speed_factors : json = None
  
     # ── derived speed factors ─────────────────────────────────────────────────
  
     def speed_factor(self, segment: Segment) -> float:
+
+        sf = self.speed_factors
+        pt = self.param_type
         factor = 1.0
 
         if not segment.tunnel:
-            # Temperature — keep existing thresholds, they match the data
             if self.tre200s0 <= -5:
-                factor = min(factor, 0.9)
+                factor = min(factor,sf[pt]["air_temp"])
 
             # Wind — only apply on exposed segments, raise thresholds significantly
             # Data shows gusts up to 30 m/s on LOW delay days, so wind effect
             # only kicks in at extreme values on this corridor
             if segment.exposed:
                 if self.fu3010z0 >= 40:      # extreme storm (p99+ in data)
-                    factor = min(factor, 0.70)
+                    factor = min(factor, sf[pt]["wind_high_exposed"])
                 elif self.fu3010z0 >= 30:    # severe (p99 in data)
-                    factor = min(factor, 0.85)
+                    factor = min(factor, sf[pt]["wind_high"])
                 elif self.fu3010z0 >= 25:    # strong (p95 in data)
-                    factor = min(factor, 0.93)
+                    factor = min(factor, sf[pt]["wind_moderate"])
                 # Below 25 m/s: no effect — data shows no correlation
 
             # Precipitation — strongest signal, keep but recalibrate units
             # rre150z0 is mm/10min, convert *6 for mm/h before passing in
             if self.rre150z0 * 6 >= 8:         # heavy (max in data ~10.8 mm/h)
-                factor = min(factor, 0.85)
+                factor = min(factor, sf[pt]["rain_high"])
             elif self.rre150z0 * 6 >= 3:
-                factor = min(factor, 0.93)
+                factor = min(factor, sf[pt]["rain_moderate"])
             elif self.rre150z0 * 6 >= 1:
-                factor = min(factor, 0.97)
+                factor = min(factor, sf[pt]["rain_low"])
 
             # Snow
             if self.htoauts0 > 20:
-                factor = min(factor, 0.70)
+                factor = min(factor, sf[pt]["snow_high"])
             elif self.htoauts0 > 10:
-                factor = min(factor, 0.85)
+                factor = min(factor, sf[pt]["snow_low"])
 
         return factor
  
@@ -73,12 +80,15 @@ class WeatherConditions:
         Probability that a switch failure adds extra dwell time at a station.
         Driven by snow depth.
         """
+        sf = self.speed_factors
+        pt = self.param_type
+
         if self.htoauts0 >= 20:
-            return 0.15
+            return sf[pt]["switch_fail_high"]
         if self.htoauts0 >= 10:
-            return 0.08
+            return sf[pt]["switch_fail_moderate"]
         if self.htoauts0 >= 5:
-            return 0.03
+            return sf[pt]["switch_fail_low"]
         return 0.0
  
     def switch_failure_delay_sec(self) -> float:
@@ -151,14 +161,15 @@ class WeatherTimeline:
                     "rre150z0", "htoauts0", "hto000d0"]
 
 
-    def __init__(self, snapshots: list[tuple[float, WeatherConditions]]):
+    def __init__(self,speed_factors, snapshots: list[tuple[float, WeatherConditions]]):
 
         if not snapshots:
-            snapshots = [(0.0, WeatherConditions())]
+            snapshots = [(0.0, WeatherConditions(speed_factors=speed_factors))]
 
         # Ensure sorted
         self._times = [t for t, _ in snapshots]
         self._conds = [c for _, c in snapshots]
+        self.sf = speed_factors
 
     def at(self, sim_time: float) -> WeatherConditions:
 
@@ -192,6 +203,7 @@ class WeatherTimeline:
         cls,
         df: pd.DataFrame,
         day: str,
+        speed_factors,
         time_col: str = "OPERATION_PLANNED_TIMESTAMP",
         resample_minutes: int | None = None,
 
@@ -272,11 +284,11 @@ class WeatherTimeline:
             cond = WeatherConditions.from_meteoswiss_row(row)
             snapshots.append((float(row["_sim_time"]), cond))
 
-        return cls(snapshots)
+        return cls(speed_factors, snapshots)
 
 
 
     @classmethod
-    def from_single(cls, cond: WeatherConditions) -> "WeatherTimeline":
+    def from_single(cls, cond: WeatherConditions, speed_factors) -> "WeatherTimeline":
         """Wrap a single WeatherConditions so old call-sites still work."""
-        return cls([(0.0, cond)])
+        return cls(speed_factors, [(0.0, cond)])

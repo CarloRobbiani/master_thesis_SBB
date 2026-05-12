@@ -7,10 +7,7 @@ df_sim["OPERATION_PLANNED_TIMESTAMP"] = pd.to_datetime(df_sim["OPERATION_PLANNED
 df_sim = df_sim.sort_values(by="OPERATION_PLANNED_TIMESTAMP")
 
 df_true = pd.read_parquet("data/train_data_weather.parquet")
-
-
 df_true = df_true[df_true["OPERATIONAL_DAY"] == "2025-01-01"]
-df_true["TRAIN_NUMBER"] = np.int64(df_true["TRAIN_NUMBER"])
 df_true["OPERATION_PLANNED_TIMESTAMP"] = pd.to_datetime(df_true["OPERATION_PLANNED_TIMESTAMP"], format="%Y-%m-%d %H:%M:%S.%f %z", utc=True)
 df_true = df_true.sort_values(by="OPERATION_PLANNED_TIMESTAMP")
 

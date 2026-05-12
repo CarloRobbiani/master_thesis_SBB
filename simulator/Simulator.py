@@ -12,6 +12,7 @@ import random
 import simpy
 import pickle
 import os
+import json
 
 
 # ------------------------------------------------------------------------------
@@ -30,6 +31,8 @@ class RailwaySimulator:
         Weather for this run.  Defaults to clear/calm if not provided.
     seed      : int | None
         Random seed for switch failure draws (for reproducibility).
+    param_type : str
+        Type of params to load from json file. Either "normal" or "learned"
  
     Example
     -------
@@ -48,16 +51,18 @@ class RailwaySimulator:
         timetable: Timetable,
         weather:   WeatherTimeline | WeatherConditions = WeatherConditions(),
         seed:      Optional[int]     = None,
+        param_type: str = "normal" 
     ):
         self.timetable = timetable
         # Normalise to WeatherTimeline so the rest of the code is uniform
         if isinstance(weather, WeatherConditions):
-            self.weather = WeatherTimeline.from_single(weather)
+            self.weather = WeatherTimeline.from_single(weather, speed_factors)
         else:
             self.weather = weather
         if seed is not None:
             random.seed(seed)
         self.PLANNED_SEGMENT_TIMES = PLANNED_SEGMENT_TIMES
+        self.param_type = param_type
  
     def run(self) -> SimResult:
         """Execute the simulation and return a SimResult."""
@@ -99,6 +104,7 @@ class RailwaySimulator:
                 sim_events   = sim_events,
                 conflict_log = conflict_log,
                 day_start    = day_start,
+                param_type   = self.param_type
             )
             env.process(proc.run())
  
@@ -231,11 +237,16 @@ if __name__ == "__main__":
  
     tt = Timetable.from_dataframe(df_raw, day)
     print(f"Loaded {len(tt.schedules)} train schedules")
+
+    # Load the json file containing information on the speed factors
+    with open("simulator\weather_factors.json") as f:
+        speed_factors = json.load(f)
+
  
     # -- Build time-varying weather timeline from real MeteoSwiss data ---------
     # Each snapshot corresponds to one unique timestamp in the day's data,
     # giving sub-hourly resolution that matches your measurement cadence.
-    weather_timeline = WeatherTimeline.from_day_dataframe(df_raw, day)
+    weather_timeline = WeatherTimeline(speed_factors=speed_factors, snapshots=None).from_day_dataframe(df_raw, day, speed_factors)
     print(f"Weather: {weather_timeline}")
 
     # -- Run 1: real time-varying weather from dataset -------------------------
@@ -252,7 +263,7 @@ if __name__ == "__main__":
  
     # -- Run 2: winter storm (static, for comparison) --------------------------
     print("-- Run 2: winter storm --")
-    storm = WeatherConditions(tre200s0=-4, fu3010z0=22, rre150z0=8, htoauts0=10)
+    storm = WeatherConditions(tre200s0=-4, fu3010z0=22, rre150z0=8, htoauts0=10, speed_factors=speed_factors)
     sim2  = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, storm, seed=42)
     r2    = sim2.run()
     r2.to_csv("simulator/winter_storm.csv")
