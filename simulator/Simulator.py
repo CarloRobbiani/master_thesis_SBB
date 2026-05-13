@@ -51,7 +51,8 @@ class RailwaySimulator:
         timetable: Timetable,
         weather:   WeatherTimeline | WeatherConditions = WeatherConditions(),
         seed:      Optional[int]     = None,
-        param_type: str = "normal" 
+        param_type: str = "normal" ,
+        inject_delay : Optional[tuple] = None
     ):
         self.timetable = timetable
         # Normalise to WeatherTimeline so the rest of the code is uniform
@@ -63,6 +64,8 @@ class RailwaySimulator:
             random.seed(seed)
         self.PLANNED_SEGMENT_TIMES = PLANNED_SEGMENT_TIMES
         self.param_type = param_type
+
+        self.inject_delay = inject_delay
  
     def run(self) -> SimResult:
         """Execute the simulation and return a SimResult."""
@@ -104,7 +107,8 @@ class RailwaySimulator:
                 sim_events   = sim_events,
                 conflict_log = conflict_log,
                 day_start    = day_start,
-                param_type   = self.param_type
+                param_type   = self.param_type,
+                inject_delay = self.inject_delay
             )
             env.process(proc.run())
  
@@ -267,4 +271,13 @@ if __name__ == "__main__":
     sim2  = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, storm, seed=42)
     r2    = sim2.run()
     r2.to_csv("simulator/data/winter_storm.csv")
+    print(r2.summary())
+
+    # -- Run 3: inject Delay --------------------------
+    print("-- Run 3: Inject delay--")
+    inject_delay = ("TWN", None, 120) # (Station, Train/Line, Delay(s))
+    storm = WeatherConditions(tre200s0=15, fu3010z0=0, rre150z0=0, htoauts0=0, speed_factors=speed_factors)
+    sim2  = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, storm, seed=42, inject_delay=inject_delay)
+    r2    = sim2.run()
+    r2.to_csv("simulator/data/injected_delay.csv")
     print(r2.summary())

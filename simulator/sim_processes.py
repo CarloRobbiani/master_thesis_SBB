@@ -40,7 +40,10 @@ class TrainProcess:
         sim_events:  list[SimEvent],
         conflict_log: list[ConflictEvent],
         day_start:   datetime,
-        param_type : str
+        param_type : str, # Type of parameter to be loaded, either normal or learned
+        inject_delay : Optional[tuple] = None # Optionally give tuple (a,b, c) where a is the station where you want 
+                                       # to inject delay, b is a line, train_number or None and 
+                                       # c is amount of delay in seconds
     ):
         self.env          = env
         self.schedule     = schedule
@@ -56,7 +59,8 @@ class TrainProcess:
         self.current_delay = 0.0    # seconds, positive = late
         self.PLANNED_SEGMENT_TIMES = PLANNED_SEGMENT_TIMES
         self.category = schedule.category
-        self.param_type = param_type
+        self.param_type = param_type 
+        self.inject_delay = inject_delay
 
         with open("simulator\weather_factors.json") as f:
             self.speed_factors = json.load(f)
@@ -214,9 +218,9 @@ class TrainProcess:
                     # Commercial stops: wait until planned departure + small boarding noise
                     min_dwell    = MIN_DWELL.get(dep_stop.stop_type, 30)
                     earliest_dep = self.env.now + min_dwell
-                    target_dep   = max(earliest_dep, dep_planned_sim)
+                    target_dep   = max(earliest_dep, dep_planned_sim, self.env.now)
                     dwell_factor = self.speed_factors[self.param_type]["sigma_dwell"]
-                    dwell_noise  = abs(random.gauss(0, dwell_factor)) 
+                    dwell_noise  = abs(random.gauss(0, dwell_factor))
                     target_dep  += dwell_noise
                     dwell = target_dep - self.env.now
                     yield self.env.timeout(dwell)
@@ -253,12 +257,24 @@ class TrainProcess:
  
             # ── 7. DEPARTURE ──────────────────────────────────────────────────
             if dep_stop is not None:
-                dep_planned_sim = self._ts_to_sim(dep_stop.planned_ts)
-                dep_actual_sim  = self.env.now
-                dep_delay       = dep_actual_sim - dep_planned_sim
-                self.current_delay = dep_delay
- 
                 causes = switch_causes.copy()
+                dep_planned_sim = self._ts_to_sim(dep_stop.planned_ts)
+
+                if self.inject_delay is not None and str(self.inject_delay[0]) == str(station_abbr):
+                    if self.inject_delay[1] is None:
+                        yield self.env.timeout(self.inject_delay[2])
+                        causes.append(f"injected {self.inject_delay[2]}s at station {self.inject_delay[0]}")
+                    elif str(self.inject_delay[1]) == str(schedule.train_number):
+                        yield self.env.timeout(self.inject_delay[2])
+                        causes.append(f"injected {self.inject_delay[2]}s at train {self.inject_delay[1]}")
+                    elif str(self.inject_delay[1]) == str(schedule.line):
+                        yield self.env.timeout(self.inject_delay[2])
+                        causes.append(f"injected {self.inject_delay[2]}s on line {self.inject_delay[1]}")
+
+                dep_actual_sim = self.env.now   # now reflects the injected wait
+                dep_delay      = dep_actual_sim - dep_planned_sim
+                self.current_delay = dep_delay
+               
                 if dep_delay > 5:
                     causes.append(f"total_delay={dep_delay:.0f}s")
  
