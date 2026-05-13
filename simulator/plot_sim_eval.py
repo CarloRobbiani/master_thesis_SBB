@@ -1,11 +1,3 @@
-"""
-Evaluation + plotting script for the trained StationMATGCN model.
-
-Must be kept consistent with training.py:
-  - Same STATION_FEATURE_COLS / EXTERNAL_COLS
-  - Same target transform (log1p with training-set shift)
-  - Same split boundaries
-"""
 import torch
 import os
 import numpy as np
@@ -15,19 +7,16 @@ import pandas as pd
 import json
 import pickle
 
-import os
 import sys
 sys.path.append(
     os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir)))
 
 from graph_models.station_graph.stationMATGCN import StationMATGCN
-from graph_models.station_graph.utils import load_and_pivot, normalize, prepare_laplacian
+from graph_models.station_graph.utils import load_and_pivot, prepare_laplacian
 from graph_models.station_graph.delay_dataset import DelayDataset
 
-# ── config (keep in sync with training.py) ────────────────────────────────────
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-DATA_PATH = "simulator/datat/normal_weather.csv"
-
+DATA_PATH = "simulator/data/normal_weather.csv"
 
 STATION_FEATURE_COLS = [
     "EVENT_TYPE",
@@ -53,60 +42,52 @@ NUM_BLOCKS  = 3
 HORIZON     = 1
 SEQ_LEN     = 28
 BATCH_SIZE  = 32
-TRAIN_RATIO = 0.7
 DEVICE      = device
 
-# ── load & split ──────────────────────────────────────────────────────────────
+# ── load data ─────────────────────────────────────────────────────────────────
 print("Loading data …")
 station_arr, external_arr, target_arr, stations = load_and_pivot(
     DATA_PATH, STATION_FEATURE_COLS, EXTERNAL_COLS
 )
-
-# Load stats fitted on REAL training data
-with open("data/train_stats.json") as f:
-    tg_min = json.load(f)["tg_min"]
-
-with open("data/feat_scaler.pkl", "rb") as f:
-    feat_scaler = pickle.load(f)
-
+# target_arr is now (T, N, 2): ch0=departure, ch1=arrival
 
 N = len(stations)
 T = len(station_arr)
 F = station_arr.shape[-1]
 E = external_arr.shape[-1]
 
+# ── load stats fitted on REAL training data ───────────────────────────────────
+# We never refit these on simulator data — the model was trained with these
+# exact transforms and must see the same distribution at inference time.
+with open("data/train_stats.json") as f:
+    tg_min = json.load(f)["tg_min"]
+
+with open("data/feat_scaler.pkl", "rb") as f:
+    feat_scaler = pickle.load(f)
+
+# Apply real-data scaler to simulator station features
 station_arr_norm = feat_scaler.transform(
     station_arr.reshape(-1, F)
-    ).reshape(T, N, F)
+).reshape(T, N, F)
 
-t_train = int(T * TRAIN_RATIO)
-t_val   = int(T * (TRAIN_RATIO + (1 - TRAIN_RATIO) / 2))
-
-tr_st = station_arr[:t_train];      tr_tg = target_arr[:t_train]
-va_st = station_arr[t_train:t_val]
-te_st = station_arr[t_val:];        te_ex = external_arr[t_val:]; te_tg = target_arr[t_val:]
-
-# ── normalize station features (fit on train only) ───────────────────────────
-#tr_st, va_st, te_st, _ = normalize(tr_st, va_st, te_st)
-
-# ── log1p target transform (fit shift on train only) ─────────────────────────
-
+# ── log1p transform targets with real-data shift ──────────────────────────────
 def to_log(a):
     return np.log1p(np.clip(a - tg_min, 0, None))
 
 def from_log(a):
     return np.expm1(a) + tg_min
 
-te_tg_log = to_log(target_arr)
+# Evaluate on the full simulator dataset (no train/val/test split needed here)
+target_log = to_log(target_arr)     # (T, N, 2)
 
 # ── dataset / loader ──────────────────────────────────────────────────────────
-#test_ds     = DelayDataset(te_st, te_ex, te_tg_log, SEQ_LEN, HORIZON)
-test_ds = DelayDataset(station_arr_norm, external_arr, te_tg_log, SEQ_LEN, HORIZON)
-test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+# DelayDataset appends lagged targets internally → x becomes (T, N, F+2)
+sim_ds     = DelayDataset(station_arr_norm, external_arr, target_log, SEQ_LEN, HORIZON)
+sim_loader = DataLoader(sim_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
 # ── model ─────────────────────────────────────────────────────────────────────
 model = StationMATGCN(
-    num_station_features  = F,
+    num_station_features  = F + 2,      # +2 for lagged dep/arr targets
     num_external_features = E,
     hidden_dim = HIDDEN_DIM,
     K          = K,
@@ -114,7 +95,9 @@ model = StationMATGCN(
     horizon    = HORIZON,
 ).to(DEVICE)
 
-model.load_state_dict(torch.load("graph_models\station_graph/best_matgcn.pt", map_location=DEVICE))
+model.load_state_dict(torch.load(
+    "graph_models/station_graph/best_matgcn.pt", map_location=DEVICE
+))
 model.eval()
 
 station_list_path = os.path.join("data", "station_list.csv")
@@ -124,69 +107,69 @@ laplacian = prepare_laplacian(station_list_path, DEVICE)
 all_preds, all_trues = [], []
 
 with torch.no_grad():
-    for x, ext, y in test_loader:
+    for x, ext, y in sim_loader:
         x, ext, y = x.to(DEVICE), ext.to(DEVICE), y.to(DEVICE)
-        pred = model(x, ext, laplacian).mean(dim=-1)   # (B, N)
+        pred = model(x, ext, laplacian)     # (B, N, horizon, 2)
+        pred = pred.squeeze(2)              # (B, N, 2)
         all_preds.append(pred.cpu().numpy())
-        all_trues.append(y.cpu().numpy())
+        all_trues.append(y.cpu().numpy())   # y is (B, N, 2)
 
-preds_log = np.concatenate(all_preds)   # (num_samples, N)
+preds_log = np.concatenate(all_preds)       # (num_samples, N, 2)
 trues_log = np.concatenate(all_trues)
 
-# ── invert log transform → seconds ───────────────────────────────────────────
-preds = from_log(preds_log)
+preds = from_log(preds_log)                 # (num_samples, N, 2)
 trues = from_log(trues_log)
 
-# ── metrics ───────────────────────────────────────────────────────────────────
-mae  = float(np.abs(preds - trues).mean())
-rmse = float(np.sqrt(((preds - trues) ** 2).mean()))
-print(f"\nTest  MAE : {mae:.1f} sec")
-print(f"Test RMSE : {rmse:.1f} sec")
+# ── metrics per channel ───────────────────────────────────────────────────────
+for ch, ch_name in enumerate(["Departure", "Arrival"]):
+    mae  = float(np.abs(preds[..., ch] - trues[..., ch]).mean())
+    rmse = float(np.sqrt(((preds[..., ch] - trues[..., ch]) ** 2).mean()))
+    print(f"\n{ch_name}  MAE : {mae:.1f} sec")
+    print(f"{ch_name} RMSE : {rmse:.1f} sec")
 
-# ── plot one station ──────────────────────────────────────────────────────────
-STATION_IDX  = None   # change to inspect different stations, or set to None to plot all errors
-WINDOW       = None  # number of timesteps to show (None = all)
+# ── plots: scatter + error histogram per channel ──────────────────────────────
+STATION_IDX = None  # set to int to inspect a single station
+WINDOW      = None  # set to int to limit timesteps shown
 
-if STATION_IDX is None:
-    pred_series = preds.ravel()
-    true_series = trues.ravel()
-else:
-    pred_series = preds[:, STATION_IDX]
-    true_series = trues[:, STATION_IDX]
+fig, axes = plt.subplots(2, 2, figsize=(14, 12))
 
-if WINDOW is not None:
-    pred_series = pred_series[:WINDOW]
-    true_series = true_series[:WINDOW]
+for ch, ch_name in enumerate(["Departure", "Arrival"]):
+    if STATION_IDX is None:
+        pred_series = preds[..., ch].ravel()
+        true_series = trues[..., ch].ravel()
+    else:
+        pred_series = preds[:, STATION_IDX, ch]
+        true_series = trues[:, STATION_IDX, ch]
 
-time_axis = np.arange(len(pred_series))
+    if WINDOW is not None:
+        pred_series = pred_series[:WINDOW]
+        true_series = true_series[:WINDOW]
 
-fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    # Scatter: predicted vs actual
+    ax = axes[ch, 0]
+    ax.scatter(true_series, pred_series, alpha=0.5, s=20, color="steelblue")
+    min_val = min(true_series.min(), pred_series.min())
+    max_val = max(true_series.max(), pred_series.max())
+    ax.plot([min_val, max_val], [min_val, max_val], "r--", linewidth=2, label="Perfect (y=x)")
+    ax.set_xlabel("Actual Delay (seconds)")
+    ax.set_ylabel("Predicted Delay (seconds)")
+    ax.set_title(f"{ch_name}: Predicted vs Actual")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
 
-# Left: scatter plot (predicted vs actual)
-axes[0].scatter(true_series, pred_series, alpha=0.5, s=20, color="steelblue", label="Predictions")
-
-# Add diagonal line (perfect prediction)
-min_val = min(true_series.min(), pred_series.min())
-max_val = max(true_series.max(), pred_series.max())
-axes[0].plot([min_val, max_val], [min_val, max_val], "r--", linewidth=2, label="Perfect prediction (y=x)")
-
-axes[0].set_xlabel("Actual Delay (seconds)")
-axes[0].set_ylabel("Predicted Delay (seconds)")
-axes[0].set_title(f"Predicted vs Actual Delays")
-axes[0].legend()
-axes[0].grid(True, alpha=0.3)
-
-# Right: error distribution histogram
-error = pred_series - true_series
-axes[1].hist(error, bins=30, alpha=0.7, color="orange", edgecolor="black", label="Prediction error")
-axes[1].axvline(0, color="red", linewidth=2, linestyle="--", label="Zero error")
-axes[1].axvline(error.mean(), color="green", linewidth=2, linestyle="--", label=f"Mean error: {error.mean():.1f}s")
-axes[1].set_xlabel("Error (seconds)")
-axes[1].set_ylabel("Frequency")
-axes[1].set_title("Prediction Error Distribution")
-axes[1].legend()
+    # Error histogram
+    ax = axes[ch, 1]
+    error = pred_series - true_series
+    ax.hist(error, bins=30, alpha=0.7, color="orange", edgecolor="black")
+    ax.axvline(0, color="red", linewidth=2, linestyle="--", label="Zero error")
+    ax.axvline(error.mean(), color="green", linewidth=2, linestyle="--",
+               label=f"Mean error: {error.mean():.1f}s")
+    ax.set_xlabel("Error (seconds)")
+    ax.set_ylabel("Frequency")
+    ax.set_title(f"{ch_name}: Error Distribution")
+    ax.legend()
 
 plt.tight_layout()
 plt.savefig("simulator/images/sim_eval_plot_scatter_normal.png", dpi=150)
 plt.show()
-print("Plot saved to eval_plot.png")
+print("Plot saved to simulator/images/sim_eval_plot_scatter_normal.png")

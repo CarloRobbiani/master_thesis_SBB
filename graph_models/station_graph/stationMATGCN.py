@@ -28,8 +28,8 @@ class StationMATGCN(nn.Module):
             STBlock(hidden_dim, hidden_dim, K)
             for _ in range(num_blocks)
         ])
-
-        self.output_layer = nn.Linear(hidden_dim, horizon)
+        self.horizon = horizon
+        self.output_layer = nn.Linear(hidden_dim, horizon * 2) # predict two values per station. Arrival + Departure
 
     def forward(self, x, external, laplacian, return_att=False):
         # x: [B, T, N, F]
@@ -50,7 +50,8 @@ class StationMATGCN(nn.Module):
             else:
                 x = block(x, laplacian, return_att=False)
 
-        out = self.output_layer(x[:, -1])
+        out = self.output_layer(x[:, -1])          # (B, N, horizon*2)
+        out = out.view(B, N, self.horizon, 2) 
         #out = self.output_layer(x.mean(dim=1))
         #out = self.output_layer(x)
         #return out.transpose(1, 2)

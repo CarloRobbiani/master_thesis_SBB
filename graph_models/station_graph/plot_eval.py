@@ -1,11 +1,3 @@
-"""
-Evaluation + plotting script for the trained StationMATGCN model.
-
-Must be kept consistent with training.py:
-  - Same STATION_FEATURE_COLS / EXTERNAL_COLS
-  - Same target transform (log1p with training-set shift)
-  - Same split boundaries
-"""
 import torch
 import os
 import numpy as np
@@ -17,11 +9,8 @@ from utils import load_and_pivot, normalize, prepare_laplacian, permutation_impo
 from delay_dataset import DelayDataset
 import pandas as pd
 
-# ── config (keep in sync with training.py) ────────────────────────────────────
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DATA_PATH = os.path.join("data", "train_data_weather.parquet")
-
-
 
 STATION_FEATURE_COLS = [
     "EVENT_TYPE",
@@ -50,7 +39,7 @@ BATCH_SIZE  = 32
 TRAIN_RATIO = 0.7
 DEVICE      = device
 
-# ── load & split ──────────────────────────────────────────────────────────────
+# -- load & split ----------------------------------------------
 print("Loading data …")
 station_arr, external_arr, target_arr, stations = load_and_pivot(
     DATA_PATH, STATION_FEATURE_COLS, EXTERNAL_COLS
@@ -67,11 +56,11 @@ tr_st = station_arr[:t_train];      tr_tg = target_arr[:t_train]
 va_st = station_arr[t_train:t_val]
 te_st = station_arr[t_val:];        te_ex = external_arr[t_val:]; te_tg = target_arr[t_val:]
 
-# ── normalize station features (fit on train only) ───────────────────────────
+# -- normalize station features ------------------
 tr_st, va_st, te_st, _ = normalize(tr_st, va_st, te_st)
 
-# ── log1p target transform (fit shift on train only) ─────────────────────────
-tg_min = float(tr_tg.min())
+# -- log1p target transform ---------------------------
+tg_min = float(tr_tg.min())   # tr_tg is now (T, N, 2) — global min covers both channels
 
 def to_log(a):
     return np.log1p(np.clip(a - tg_min, 0, None))
@@ -81,13 +70,14 @@ def from_log(a):
 
 te_tg_log = to_log(te_tg)
 
-# ── dataset / loader ──────────────────────────────────────────────────────────
+# -- dataset / loader ------------------------------------------
+# DelayDataset now concatenates lagged targets internally → x is (T, N, F+2)
 test_ds     = DelayDataset(te_st, te_ex, te_tg_log, SEQ_LEN, HORIZON)
 test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
-# ── model ─────────────────────────────────────────────────────────────────────
+# -- model ---------------------------------------------------
 model = StationMATGCN(
-    num_station_features  = F,
+    num_station_features  = F + 2, #  F+2 because DelayDataset appends 2 lagged target channels
     num_external_features = E,
     hidden_dim = HIDDEN_DIM,
     K          = K,
@@ -95,56 +85,65 @@ model = StationMATGCN(
     horizon    = HORIZON,
 ).to(DEVICE)
 
-model.load_state_dict(torch.load("graph_models\station_graph/best_matgcn.pt", map_location=DEVICE))
+model.load_state_dict(torch.load("graph_models/station_graph/best_matgcn.pt", map_location=DEVICE))
 
 station_list_path = os.path.join("data", "station_list.csv")
 laplacian = prepare_laplacian(station_list_path, DEVICE)
 
+
 def eval_model(model, loader, laplacian):
     model.eval()
-
-    # ── inference ─────────────────────────────────────────────────────────────────
-    all_preds, all_trues, all_weigths = [], [], []
+    all_preds, all_trues, all_weights = [], [], []
 
     with torch.no_grad():
         for x, ext, y in loader:
             x, ext, y = x.to(DEVICE), ext.to(DEVICE), y.to(DEVICE)
-            pred, feat_weights = model(x, ext, laplacian, return_att=True)   # (B, N)
-            pred = pred.mean(dim=-1)
+            pred, feat_weights = model(x, ext, laplacian, return_att=True)
+            # CHANGED: pred is (B, N, horizon, 2); squeeze horizon dim (=1)
+            pred = pred.squeeze(2)          # → (B, N, 2)
             all_preds.append(pred.cpu().numpy())
-            all_trues.append(y.cpu().numpy())
-            all_weigths.append(feat_weights)
+            all_trues.append(y.cpu().numpy())   # y is (B, N, 2)
+            all_weights.append(feat_weights)
 
-    preds_log = np.concatenate(all_preds)   # (num_samples, N)
-    trues_log = np.concatenate(all_trues)
+    preds_log = np.concatenate(all_preds)   # (num_samples, N, 2)
+    trues_log = np.concatenate(all_trues)   # (num_samples, N, 2)
 
-    # ── invert log transform → seconds ───────────────────────────────────────────
-    preds = from_log(preds_log)
+    preds = from_log(preds_log)             # (num_samples, N, 2)
     trues = from_log(trues_log)
 
+    # CHANGED: report metrics per channel (ch0=departure, ch1=arrival)
+    for ch, name in enumerate(["Departure", "Arrival"]):
+        mae  = float(np.abs(preds[..., ch] - trues[..., ch]).mean())
+        rmse = float(np.sqrt(((preds[..., ch] - trues[..., ch]) ** 2).mean()))
+        print(f"\n{name}  MAE : {mae:.1f} sec")
+        print(f"{name} RMSE : {rmse:.1f} sec")
+
+    # Feature attention weights (unchanged logic, updated feature names)
     weights = []
-    for batch in all_weigths:
+    for batch in all_weights:
         for block_w in batch:
             weights.append(block_w.cpu())
-
     weights = torch.cat(weights, dim=0)
-    feat_importance = weights.mean(dim=(0,1,2))
-    all_station_cols = STATION_FEATURE_COLS + ["target_arr"]
-    feature_names = STATION_FEATURE_COLS + ["target_arr"] + EXTERNAL_COLS
-    """for name, score in zip(feature_names, feat_importance):
-        print(f"{name}: {score:.4f}") """
+    feat_importance = weights.mean(dim=(0, 1, 2))
 
-    # ── metrics ───────────────────────────────────────────────────────────────────
-    mae  = float(np.abs(preds - trues).mean())
-    rmse = float(np.sqrt(((preds - trues) ** 2).mean()))
-    print(f"\nTest  MAE : {mae:.1f} sec")
-    print(f"Test RMSE : {rmse:.1f} sec")
+    # lagged_dep and lagged_arr replace old target_arr input
+    feature_names = STATION_FEATURE_COLS + ["lagged_dep", "lagged_arr"] + EXTERNAL_COLS
+    for name, score in zip(feature_names, feat_importance):
+        print(f"{name}: {score:.4f}")
 
-    return preds, trues, mae
+    mae_overall = float(np.abs(preds - trues).mean())
+    return preds, trues, mae_overall
+
 
 preds, trues, mae = eval_model(model, test_loader, laplacian)
-station_feature_names = STATION_FEATURE_COLS + ["target_arr"]
+
+# updated station feature names to match new F+2 input
+station_feature_names  = STATION_FEATURE_COLS + ["lagged_dep", "lagged_arr"]
 external_feature_names = EXTERNAL_COLS
+
+# permutation_importance calls compute_mae_seconds internally;
+# that function uses pred.mean(dim=-1) which collapses the horizon dim.
+# compute_mae_seconds in utils.py needs updating too
 importances = permutation_importance(
     model,
     test_loader,
@@ -155,129 +154,120 @@ importances = permutation_importance(
 )
 print(importances)
 
-# ── plot one station ──────────────────────────────────────────────────────────
-STATION_IDX  = None   # change to inspect different stations, or set to None to plot all errors
-WINDOW       = None  # number of timesteps to show (None = all)
+# -- plotting ------------------------------------------------------------------
+# preds/trues are (num_samples, N, 2). Plot each channel separately.
+STATION_IDX = None
+WINDOW      = None
 
-station_df = pd.read_csv("data/station_list.csv", header=None)
-station_names = station_df.iloc[0].tolist()   # full names
-station_codes = station_df.iloc[1].tolist()   # short codes
+station_df    = pd.read_csv("data/station_list.csv", header=None)
+station_names = station_df.iloc[0].tolist()
+station_codes = station_df.iloc[1].tolist()
 
-if STATION_IDX is None:
-    pred_series = preds.ravel()
-    true_series = trues.ravel()
-else:
-    pred_series = preds[:, STATION_IDX]
-    true_series = trues[:, STATION_IDX]
+fig, axes = plt.subplots(2, 2, figsize=(14, 12))
 
-if WINDOW is not None:
-    pred_series = pred_series[:WINDOW]
-    true_series = true_series[:WINDOW]
+for ch, ch_name in enumerate(["Departure", "Arrival"]):
+    if STATION_IDX is None:
+        # index last dim for channel
+        pred_series = preds[..., ch].ravel()
+        true_series = trues[..., ch].ravel()
+    else:
+        pred_series = preds[:, STATION_IDX, ch]
+        true_series = trues[:, STATION_IDX, ch]
 
-time_axis = np.arange(len(pred_series))
+    if WINDOW is not None:
+        pred_series = pred_series[:WINDOW]
+        true_series = true_series[:WINDOW]
 
-fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    # Scatter
+    ax = axes[ch, 0]
+    ax.scatter(true_series, pred_series, alpha=0.5, s=20, color="steelblue")
+    min_val = min(true_series.min(), pred_series.min())
+    max_val = max(true_series.max(), pred_series.max())
+    ax.plot([min_val, max_val], [min_val, max_val], "r--", linewidth=2, label="Perfect (y=x)")
+    ax.set_xlabel("Actual Delay (seconds)")
+    ax.set_ylabel("Predicted Delay (seconds)")
+    ax.set_title(f"{ch_name}: Predicted vs Actual")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
 
-# Left: scatter plot (predicted vs actual)
-axes[0].scatter(true_series, pred_series, alpha=0.5, s=20, color="steelblue", label="Predictions")
-
-# Add diagonal line (perfect prediction)
-min_val = min(true_series.min(), pred_series.min())
-max_val = max(true_series.max(), pred_series.max())
-axes[0].plot([min_val, max_val], [min_val, max_val], "r--", linewidth=2, label="Perfect prediction (y=x)")
-
-axes[0].set_xlabel("Actual Delay (seconds)")
-axes[0].set_ylabel("Predicted Delay (seconds)")
-axes[0].set_title(f"Predicted vs Actual Delays")
-axes[0].legend()
-axes[0].grid(True, alpha=0.3)
-
-# Right: error distribution histogram
-error = pred_series - true_series
-axes[1].hist(error, bins=30, alpha=0.7, color="orange", edgecolor="black", label="Prediction error")
-axes[1].axvline(0, color="red", linewidth=2, linestyle="--", label="Zero error")
-axes[1].axvline(error.mean(), color="green", linewidth=2, linestyle="--", label=f"Mean error: {error.mean():.1f}s")
-axes[1].set_xlabel("Error (seconds)")
-axes[1].set_ylabel("Frequency")
-axes[1].set_title("Prediction Error Distribution")
-axes[1].legend()
+    # Error histogram
+    ax = axes[ch, 1]
+    error = pred_series - true_series
+    ax.hist(error, bins=30, alpha=0.7, color="orange", edgecolor="black")
+    ax.axvline(0, color="red", linewidth=2, linestyle="--")
+    ax.axvline(error.mean(), color="green", linewidth=2, linestyle="--",
+               label=f"Mean error: {error.mean():.1f}s")
+    ax.set_xlabel("Error (seconds)")
+    ax.set_ylabel("Frequency")
+    ax.set_title(f"{ch_name}: Error Distribution")
+    ax.legend()
 
 plt.tight_layout()
 plt.savefig("images/eval_plot_scatter.png", dpi=150)
 plt.show()
-print("Plot saved to eval_plot.png")
 
-# --- Hourly delay and error analysis ---
-# Reconstruct timestamps for the test split
+# -- hourly analysis ---------------------------------------
 raw_df = pd.read_parquet(DATA_PATH)
 raw_df = raw_df.sort_values("OPERATION_PLANNED_TIMESTAMP")
-timestamps = raw_df["OPERATION_PLANNED_TIMESTAMP"].iloc[t_val + SEQ_LEN:].reset_index(drop=True)
+timestamps = raw_df["OPERATION_PLANNED_TIMESTAMP"].iloc[
+    t_val + SEQ_LEN : t_val + SEQ_LEN + len(preds)
+].reset_index(drop=True)
 
-# preds and trues are (num_samples, N) — average across stations for hourly analysis
-pred_mean = preds.mean(axis=1)   # (num_samples,)
-true_mean = trues.mean(axis=1)
+num_samples, num_stations, _ = preds.shape  # unpack 3 dims
+expanded_hours = np.repeat(timestamps.dt.hour.values, num_stations)
 
-# Trim timestamps to match (dataset drops last HORIZON rows)
-timestamps = timestamps.iloc[:len(pred_mean)].reset_index(drop=True)
+fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-hourly_df = pd.DataFrame({
-    "hour":      timestamps.dt.hour,
-    "predicted": pred_mean,
-    "actual":    true_mean,
-    "abs_error": np.abs(pred_mean - true_mean)
-})
+for ch, ch_name in enumerate(["Departure", "Arrival"]):
+    # index last dim for channel
+    hourly_df = pd.DataFrame({
+        "hour":      expanded_hours,
+        "predicted": preds[..., ch].reshape(-1),
+        "actual":    trues[..., ch].reshape(-1),
+    })
+    hourly_df["abs_error"] = np.abs(hourly_df["predicted"] - hourly_df["actual"])
+    hourly = hourly_df.groupby("hour").agg(
+        avg_actual=("actual", "mean"),
+        avg_predicted=("predicted", "mean"),
+        avg_error=("abs_error", "mean")
+    ).reset_index()
 
-hourly = hourly_df.groupby("hour").agg(
-    avg_actual=("actual", "mean"),
-    avg_predicted=("predicted", "mean"),
-    avg_error=("abs_error", "mean")
-).reset_index()
+    axes[ch, 0].plot(hourly["hour"], hourly["avg_actual"],    label="Actual",    marker="o")
+    axes[ch, 0].plot(hourly["hour"], hourly["avg_predicted"], label="Predicted", marker="o")
+    axes[ch, 0].set_xlabel("Hour of Day")
+    axes[ch, 0].set_ylabel("Average Delay (seconds)")
+    axes[ch, 0].set_title(f"{ch_name}: Average Delay by Hour")
+    axes[ch, 0].set_xticks(range(0, 24))
+    axes[ch, 0].legend()
+    axes[ch, 0].grid(True, alpha=0.3)
 
-fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-axes[0].plot(hourly["hour"], hourly["avg_actual"], label="Actual", marker="o")
-axes[0].plot(hourly["hour"], hourly["avg_predicted"], label="Predicted", marker="o")
-axes[0].set_xlabel("Hour of Day")
-axes[0].set_ylabel("Average Delay (seconds)")
-axes[0].set_title("Average Delay by Hour of Day")
-axes[0].set_xticks(range(0, 24))
-axes[0].legend()
-axes[0].grid(True, alpha=0.3)
-
-axes[1].bar(hourly["hour"], hourly["avg_error"], color="tomato", alpha=0.8)
-axes[1].set_xlabel("Hour of Day")
-axes[1].set_ylabel("Mean Absolute Error (seconds)")
-axes[1].set_title("Model Error by Hour of Day")
-axes[1].set_xticks(range(0, 24))
-axes[1].grid(True, alpha=0.3, axis="y")
+    axes[ch, 1].bar(hourly["hour"], hourly["avg_error"], color="tomato", alpha=0.8)
+    axes[ch, 1].set_xlabel("Hour of Day")
+    axes[ch, 1].set_ylabel("Mean Absolute Error (seconds)")
+    axes[ch, 1].set_title(f"{ch_name}: Model Error by Hour")
+    axes[ch, 1].set_xticks(range(0, 24))
+    axes[ch, 1].grid(True, alpha=0.3, axis="y")
 
 plt.tight_layout()
 plt.savefig("images/hourly_delay_analysis_matgcn.png")
 plt.show()
 
+# -- per-station boxplot -------------------------------------------------------
+# plot one boxplot figure per channel
+for ch, ch_name in enumerate(["Departure", "Arrival"]):
+    errors = preds[..., ch] - trues[..., ch]   # (num_samples, N)
+    mae_per_station = np.abs(errors).mean(axis=0)
+    sorted_idx = np.argsort(mae_per_station)[::-1]
 
-# ---- per-station metrics -----
-mae_per_station  = np.abs(preds - trues).mean(axis=0)   # (N,)
-rmse_per_station = np.sqrt(((preds - trues) ** 2).mean(axis=0))
-
-# Sort stations by error (optional but useful)
-sorted_idx = np.argsort(mae_per_station)[::-1]  # descending
-mae_sorted = mae_per_station[sorted_idx]
-station_names_sorted = [stations[i] for i in sorted_idx]
-errors = preds - trues   # shape: (num_samples, N)
-
-plt.figure(figsize=(16, 6))
-
-plt.boxplot(
-    errors,
-    labels=[station_names[i] for i in sorted_idx],
-    showfliers=False   # optional: hides extreme outliers (cleaner)
-)
-
-plt.xticks(rotation=90, fontsize=8)
-plt.ylabel("Prediction Error (seconds)")
-plt.title("Error Distribution per Station (MATGCN)")
-
-plt.tight_layout()
-plt.savefig("images/boxplot_per_station_matgcn.png", dpi=150)
-plt.show()
+    plt.figure(figsize=(16, 6))
+    plt.boxplot(
+        errors[:, sorted_idx],
+        labels=[station_names[i] for i in sorted_idx],
+        showfliers=False
+    )
+    plt.xticks(rotation=90, fontsize=8)
+    plt.ylabel("Prediction Error (seconds)")
+    plt.title(f"{ch_name} Error Distribution per Station (MATGCN)")
+    plt.tight_layout()
+    plt.savefig(f"images/boxplot_per_station_{ch_name.lower()}_matgcn.png", dpi=150)
+    plt.show()

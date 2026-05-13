@@ -256,14 +256,13 @@ def load_and_pivot(path:str, STATION_FEATURE_COLS, EXTERNAL_COLS):
     print(f"  Timesteps : {T},  Stations : {N}")
 
     # Station features = original STATION_FEATURE_COLS
-    # + arrival delay as an extra autoregressive input feature
-    all_station_cols = STATION_FEATURE_COLS + ["target_arr"]
+    all_station_cols = STATION_FEATURE_COLS
     F  = len(all_station_cols)
     E  = len(EXTERNAL_COLS) if EXTERNAL_COLS else 1
 
     station_arr  = np.full((T, N, F), np.nan, dtype=np.float32)
     external_arr = np.full((T, E),    np.nan, dtype=np.float32)
-    target_arr   = np.full((T, N),    np.nan, dtype=np.float32)
+    target_arr   = np.full((T, N, 2), np.nan, dtype=np.float32) # Account for both arrival and departure delays
 
     station_idx = {s: i for i, s in enumerate(stations)}
     time_idx    = {t: i for i, t in enumerate(timestamps)}
@@ -276,7 +275,8 @@ def load_and_pivot(path:str, STATION_FEATURE_COLS, EXTERNAL_COLS):
             row[c] if pd.notna(row.get(c)) else np.nan
             for c in all_station_cols
         ]
-        target_arr[t, n] = row["target_dep"] if pd.notna(row.get("target_dep")) else np.nan
+        target_arr[t, n, 0] = row["target_dep"] if pd.notna(row.get("target_dep")) else np.nan
+        target_arr[t, n, 1] = row["target_arr"] if pd.notna(row.get("target_arr")) else np.nan
 
         if EXTERNAL_COLS and np.isnan(external_arr[t, 0]):
             external_arr[t, :] = [
@@ -301,8 +301,9 @@ def load_and_pivot(path:str, STATION_FEATURE_COLS, EXTERNAL_COLS):
             station_arr[:, n, f] = s.ffill(limit=3).fillna(0).values
 
     for n in range(N):
-        s = pd.Series(target_arr[:, n])
-        target_arr[:, n] = s.ffill(limit=3).fillna(0).values
+        for c in range(2):  # both channels
+            s = pd.Series(target_arr[:, n, c])
+            target_arr[:, n, c] = s.ffill(limit=3).fillna(0).values
 
     print(f"  NaNs after  fill — station: {np.isnan(station_arr).sum()}, "
           f"external: {np.isnan(external_arr).sum()}, "

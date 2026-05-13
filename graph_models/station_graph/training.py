@@ -104,7 +104,8 @@ def train_epoch(model, loader, optimizer, criterion, laplacian, device):
         L = laplacian.to(device)
 
         optimizer.zero_grad()
-        pred = model(x, ext, L).mean(dim=-1)   # (B, N)
+        #pred = model(x, ext, L).mean(dim=-1)   # (B, N)
+        pred = model(x, ext, L).squeeze(2) # (B, N, 2)
         loss = criterion(pred, y)
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
@@ -121,7 +122,8 @@ def evaluate(model, loader, criterion, laplacian, device):
     for x, ext, y in loader:
         x, ext, y = x.to(device), ext.to(device), y.to(device)
         L = laplacian.to(device)
-        pred = model(x, ext, L).mean(dim=-1)
+        #pred = model(x, ext, L).mean(dim=-1)
+        pred = model(x, ext, L).squeeze(2)     # (B, N, 2)
         total_loss += criterion(pred, y).item() * x.size(0)
         all_pred.append(pred.cpu())
         all_true.append(y.cpu())
@@ -147,7 +149,8 @@ def main():
     )
     N = len(stations)
     T = len(station_arr)
-    F = station_arr.shape[-1]
+    #F = station_arr.shape[-1]
+    F = station_arr.shape[-1] + 2  # +2 for lagged dep/arr targets
     E = external_arr.shape[-1]
 
     # ── train / val / test split (temporal) ──────────────────────────
@@ -271,6 +274,8 @@ def main():
     test_rmse_sec = float(np.sqrt(((preds_sec - trues_sec) ** 2).mean()))
 
     print(f"\n{'─'*65}")
+    print(f"Test MAE dep : {np.abs(preds_sec[...,0] - trues_sec[...,0]).mean():.1f} sec")
+    print(f"Test MAE arr : {np.abs(preds_sec[...,1] - trues_sec[...,1]).mean():.1f} sec")
     print(f"Test  MAE : {test_mae_sec:>8.1f} sec")
     print(f"Test RMSE : {test_rmse_sec:>8.1f} sec")
     print("Best model saved to best_matgcn.pt")
