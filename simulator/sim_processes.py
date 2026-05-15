@@ -7,6 +7,7 @@ from sim_topology import SEGMENTS, Segment, LINE_ORDER, MIN_DWELL, STATIONS
 import random
 from typing import Optional
 import json
+import math
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SIMPY PROCESSES
@@ -41,9 +42,10 @@ class TrainProcess:
         conflict_log: list[ConflictEvent],
         day_start:   datetime,
         param_type : str, # Type of parameter to be loaded, either normal or learned
-        inject_delay : Optional[tuple] = None # Optionally give tuple (a,b, c) where a is the station where you want 
+        inject_delay : Optional[tuple] = None, # Optionally give tuple (a,b, c) where a is the station where you want 
                                        # to inject delay, b is a line, train_number or None and 
                                        # c is amount of delay in seconds
+        entry_delays_sec = None
     ):
         self.env          = env
         self.schedule     = schedule
@@ -61,6 +63,7 @@ class TrainProcess:
         self.category = schedule.category
         self.param_type = param_type 
         self.inject_delay = inject_delay
+        self.entry_delays_sec = entry_delays_sec
 
         with open("simulator\weather_factors.json") as f:
             self.speed_factors = json.load(f)
@@ -229,9 +232,14 @@ class TrainProcess:
                 dep_planned_sim = self._ts_to_sim(dep_stop.planned_ts)
                 wait = max(0, dep_planned_sim - self.env.now)
                 yield self.env.timeout(wait)
+
+                # Seed with GCN prediction
+                if self.entry_delays_sec is not None:
+                    self.current_delay = self.entry_delays_sec
+                    yield self.env.timeout(self.entry_delays_sec)
+                    
                 # Seed with the real initial delay if available
-                import math
-                if not math.isnan(dep_stop.actual_delay):
+                elif not math.isnan(dep_stop.actual_delay):
                     self.current_delay = dep_stop.actual_delay
                     yield self.env.timeout(max(0, dep_stop.actual_delay))
 

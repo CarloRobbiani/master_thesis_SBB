@@ -260,7 +260,7 @@ def main():
     with torch.no_grad():
         for x, ext, y in test_loader:
             x, ext, y = x.to(DEVICE), ext.to(DEVICE), y.to(DEVICE)
-            pred = model(x, ext, laplacian.to(DEVICE)).mean(dim=-1)
+            pred = model(x, ext, laplacian.to(DEVICE)).squeeze(2)
             all_pred.append(pred.cpu().numpy())
             all_true.append(y.cpu().numpy())
 
@@ -274,11 +274,12 @@ def main():
     test_rmse_sec = float(np.sqrt(((preds_sec - trues_sec) ** 2).mean()))
 
     print(f"\n{'─'*65}")
-    print(f"Test MAE dep : {np.abs(preds_sec[...,0] - trues_sec[...,0]).mean():.1f} sec")
-    print(f"Test MAE arr : {np.abs(preds_sec[...,1] - trues_sec[...,1]).mean():.1f} sec")
     print(f"Test  MAE : {test_mae_sec:>8.1f} sec")
     print(f"Test RMSE : {test_rmse_sec:>8.1f} sec")
     print("Best model saved to best_matgcn.pt")
+    print(f"Test MAE dep : {np.abs(preds_sec[...,0] - trues_sec[...,0]).mean():.1f} sec")
+    print(f"Test MAE arr : {np.abs(preds_sec[...,1] - trues_sec[...,1]).mean():.1f} sec")
+    
 
 
 if __name__ == "__main__":

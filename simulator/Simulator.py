@@ -13,6 +13,7 @@ import simpy
 import pickle
 import os
 import json
+from sim_GCN import GCNPredictor
 
 
 # ------------------------------------------------------------------------------
@@ -33,6 +34,10 @@ class RailwaySimulator:
         Random seed for switch failure draws (for reproducibility).
     param_type : str
         Type of params to load from json file. Either "normal" or "learned"
+    inject_delay : tuple
+        Tuple that specifies where to inject how much delay (Station, Train, Delay)
+    use_GCN : Optional[bool]
+        Boolean that specifies if we want to use the GCN to predict travel times
  
     Example
     -------
@@ -52,8 +57,10 @@ class RailwaySimulator:
         weather:   WeatherTimeline | WeatherConditions = WeatherConditions(),
         seed:      Optional[int]     = None,
         param_type: str = "normal" ,
-        inject_delay : Optional[tuple] = None
-    ):
+        inject_delay : Optional[tuple] = None,
+        GCN = None,
+        df_day: Optional[pd.DataFrame] = None,
+        ):
         self.timetable = timetable
         # Normalise to WeatherTimeline so the rest of the code is uniform
         if isinstance(weather, WeatherConditions):
@@ -66,6 +73,9 @@ class RailwaySimulator:
         self.param_type = param_type
 
         self.inject_delay = inject_delay
+
+        self.GCN = GCN
+        self.df_day = df_day
  
     def run(self) -> SimResult:
         """Execute the simulation and return a SimResult."""
@@ -95,9 +105,22 @@ class RailwaySimulator:
         conflict_log: list[ConflictEvent] = []
  
         # -- Launch one process per train ----------------------------------------
+        # Pre-compute GCN entry delays once, before launching processes
+        entry_delays: dict[int, float] = {}
+        if self.GCN is not None and self.df_day is not None:
+            entry_delays = self.GCN.predict_entry_delays(
+                self.df_day, self.timetable
+                )
+        else: entry_delays = None
+     
         for schedule in tt.schedules:
             """ if schedule.train_number != 1506:
                 continue """
+            
+            if entry_delays is not None:
+                ed = entry_delays.get(schedule.train_number)
+            else: ed = None
+
             proc = TrainProcess(
                 PLANNED_SEGMENT_TIMES = self.PLANNED_SEGMENT_TIMES,
                 env          = env,
@@ -108,7 +131,8 @@ class RailwaySimulator:
                 conflict_log = conflict_log,
                 day_start    = day_start,
                 param_type   = self.param_type,
-                inject_delay = self.inject_delay
+                inject_delay = self.inject_delay,
+                entry_delays_sec = ed
             )
             env.process(proc.run())
  
@@ -263,7 +287,7 @@ if __name__ == "__main__":
     sim1 = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, weather_timeline, seed=42)
     r1   = sim1.run()
     r1.to_csv("simulator/data/normal_weather.csv")
-    print(r1.summary())
+    #print(r1.summary())
  
     # -- Run 2: winter storm (static, for comparison) --------------------------
     print("-- Run 2: winter storm --")
@@ -271,7 +295,7 @@ if __name__ == "__main__":
     sim2  = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, storm, seed=42)
     r2    = sim2.run()
     r2.to_csv("simulator/data/winter_storm.csv")
-    print(r2.summary())
+    #print(r2.summary())
 
     # -- Run 3: inject Delay --------------------------
     print("-- Run 3: Inject delay--")
@@ -280,4 +304,17 @@ if __name__ == "__main__":
     sim2  = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, storm, seed=42, inject_delay=inject_delay)
     r2    = sim2.run()
     r2.to_csv("simulator/data/injected_delay.csv")
-    print(r2.summary())
+    #print(r2.summary())
+
+    # -- Run 4: use model for initial delay -----------------
+    gcn = GCNPredictor(
+    model_path        = "graph_models\station_graph/best_matgcn.pt",
+    scaler_path       = "data/feat_scaler.pkl",
+    stats_path        = "data/train_stats.json",
+    station_list_path = "data/station_list.csv",
+)
+    sim4 = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, weather_timeline, 
+                            seed=42, GCN = gcn, df_day = df_raw[df_raw["OPERATIONAL_DAY"] == day])
+    r4   = sim4.run()
+    r4.to_csv("simulator/data/sim_with_GCN.csv")
+    #print(r4.summary())

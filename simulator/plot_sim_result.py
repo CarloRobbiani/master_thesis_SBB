@@ -2,10 +2,10 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 
-FILE_NAME = "injected_delay.csv"
+FILE_NAME = "sim_with_GCN"
 BASELINE_NAME = "normal_weather.csv"
 
-df_sim = pd.read_csv(f"simulator\data\{FILE_NAME}")
+df_sim = pd.read_csv(f"simulator\data\{FILE_NAME}.csv")
 #df_sim = pd.read_csv("simulator/data/normal_weather.csv")
 df_sim["OPERATION_PLANNED_TIMESTAMP"] = pd.to_datetime(df_sim["OPERATION_PLANNED_TIMESTAMP"], format="%Y-%m-%d %H:%M:%S", utc=True)
 df_sim = df_sim.sort_values(by="OPERATION_PLANNED_TIMESTAMP")
@@ -125,5 +125,5 @@ axes4[1].legend()
 axes4[1].grid(True, axis="y", alpha=0.3)
  
 plt.tight_layout()
-plt.savefig(f"simulator/images/heatmap_{FILE_NAME}.png")
+#plt.savefig(f"simulator/images/heatmap_{FILE_NAME}.png")
 plt.show()
