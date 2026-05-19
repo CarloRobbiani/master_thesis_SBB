@@ -68,10 +68,10 @@ axes[0].legend()
 axes[0].grid(True, alpha=0.3)
 
 error = pred_series[:,0] - true_series
-
+abs_error = np.abs(pred_series[:,0] - true_series)
 axes[1].hist(error, bins=30, alpha=0.7, color="orange", edgecolor="black", label="Prediction error")
 axes[1].axvline(0, color="red", linewidth=2, linestyle="--", label="Zero error")
-axes[1].axvline(error.mean(), color="green", linewidth=2, linestyle="--", label=f"Mean error: {error.mean():.1f}s")
+axes[1].axvline(abs_error.mean(), color="green", linewidth=2, linestyle="--", label=f"Mean abs error: {abs_error.mean():.1f}s")
 axes[1].set_xlabel("Error (seconds)")
 axes[1].set_ylabel("Frequency")
 axes[1].set_title("Prediction Error Distribution")

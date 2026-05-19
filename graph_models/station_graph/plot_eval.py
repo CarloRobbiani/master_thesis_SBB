@@ -193,10 +193,11 @@ for ch, ch_name in enumerate(["Departure", "Arrival"]):
     # Error histogram
     ax = axes[ch, 1]
     error = pred_series - true_series
+    abs_error = np.abs(pred_series - true_series)
     ax.hist(error, bins=30, alpha=0.7, color="orange", edgecolor="black")
     ax.axvline(0, color="red", linewidth=2, linestyle="--")
-    ax.axvline(error.mean(), color="green", linewidth=2, linestyle="--",
-               label=f"Mean error: {error.mean():.1f}s")
+    ax.axvline(abs_error.mean(), color="green", linewidth=2, linestyle="--",
+               label=f"Mean abs error: {abs_error.mean():.1f}s")
     ax.set_xlabel("Error (seconds)")
     ax.set_ylabel("Frequency")
     ax.set_title(f"{ch_name}: Error Distribution")

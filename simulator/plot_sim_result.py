@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 
-FILE_NAME = "sim_with_GCN"
+FILE_NAME = "sbi_calibrated_2025-01-01"
 BASELINE_NAME = "normal_weather.csv"
 
 df_sim = pd.read_csv(f"simulator\data\{FILE_NAME}.csv")
@@ -60,9 +60,10 @@ axes[0].grid(True, alpha=0.3)
 
 # Right: error distribution histogram
 error = pred_series - true_series
+abs_error = np.abs(pred_series - true_series)
 axes[1].hist(error, bins=30, alpha=0.7, color="orange", edgecolor="black", label="Prediction error")
 axes[1].axvline(0, color="red", linewidth=2, linestyle="--", label="Zero error")
-axes[1].axvline(error.mean(), color="green", linewidth=2, linestyle="--", label=f"Mean error: {error.mean():.1f}s")
+axes[1].axvline(abs_error.mean(), color="green", linewidth=2, linestyle="--", label=f"Mean abs error: {abs_error.mean():.1f}s")
 axes[1].set_xlabel("Error (seconds)")
 axes[1].set_ylabel("Frequency")
 axes[1].set_title("Prediction Error Distribution")

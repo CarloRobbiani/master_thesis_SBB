@@ -237,7 +237,7 @@ class TrainProcess:
                 if self.entry_delays_sec is not None:
                     self.current_delay = self.entry_delays_sec
                     yield self.env.timeout(self.entry_delays_sec)
-                    
+
                 # Seed with the real initial delay if available
                 elif not math.isnan(dep_stop.actual_delay):
                     self.current_delay = dep_stop.actual_delay
@@ -249,9 +249,6 @@ class TrainProcess:
                 yield self.env.timeout(wait) """
             
             
-            
-
- 
             # ── 6. SWITCH FAILURE ─────────────────────────────────────────────
             switch_causes = []
             if dep_stop is not None:
