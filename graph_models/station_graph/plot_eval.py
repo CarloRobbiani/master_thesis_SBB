@@ -5,9 +5,10 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 
 from stationMATGCN import StationMATGCN
-from utils import load_and_pivot, normalize, prepare_laplacian, permutation_importance
+from utils import load_and_pivot, normalize, normalize_targets, prepare_laplacian, permutation_importance
 from delay_dataset import DelayDataset
 import pandas as pd
+import pickle
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DATA_PATH = os.path.join("data", "train_data_weather.parquet")
@@ -53,14 +54,16 @@ t_train = int(T * TRAIN_RATIO)
 t_val   = int(T * (TRAIN_RATIO + (1 - TRAIN_RATIO) / 2))
 
 tr_st = station_arr[:t_train];      tr_tg = target_arr[:t_train]
-va_st = station_arr[t_train:t_val]
+va_st = station_arr[t_train:t_val]; va_tg = target_arr[t_train:t_val]
 te_st = station_arr[t_val:];        te_ex = external_arr[t_val:]; te_tg = target_arr[t_val:]
 
 # -- normalize station features ------------------
 tr_st, va_st, te_st, _ = normalize(tr_st, va_st, te_st)
 
 # -- log1p target transform ---------------------------
-tg_min = float(tr_tg.min())   # tr_tg is now (T, N, 2) — global min covers both channels
+import json
+with open("data/train_stats.json") as f:
+    tg_min = json.load(f)["tg_min"]
 
 def to_log(a):
     return np.log1p(np.clip(a - tg_min, 0, None))
@@ -70,9 +73,29 @@ def from_log(a):
 
 te_tg_log = to_log(te_tg)
 
+tr_tg = to_log(tr_tg)
+va_tg = to_log(va_tg)
+te_tg = to_log(te_tg)
+
+with open("data/target_scaler.pkl", "rb") as f:
+    target_scaler = pickle.load(f)
+
+def invert_targets(arr_norm):
+    sh = arr_norm.shape
+    return target_scaler.inverse_transform(arr_norm.reshape(-1, 2)).reshape(sh)
+
+
+
+# ── normalise targets (z-score in log space) ──────────────────────
+tr_tg, va_tg, te_tg, target_scaler = normalize_targets(tr_tg, va_tg, te_tg)
+
+T_te, N_te, C = te_tg_log.shape
+te_tg_scaled = target_scaler.transform(te_tg_log.reshape(-1, C)).reshape(T_te, N_te, C)
+
+
 # -- dataset / loader ------------------------------------------
 # DelayDataset now concatenates lagged targets internally → x is (T, N, F+2)
-test_ds     = DelayDataset(te_st, te_ex, te_tg_log, SEQ_LEN, HORIZON)
+test_ds     = DelayDataset(te_st, te_ex, te_tg_scaled, SEQ_LEN, HORIZON)
 test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
 # -- model ---------------------------------------------------
@@ -108,13 +131,18 @@ def eval_model(model, loader, laplacian):
     preds_log = np.concatenate(all_preds)   # (num_samples, N, 2)
     trues_log = np.concatenate(all_trues)   # (num_samples, N, 2)
 
-    preds = from_log(preds_log)             # (num_samples, N, 2)
-    trues = from_log(trues_log)
+    sh = preds_log.shape
+
+    preds_log = invert_targets(preds_log)
+    trues_log = invert_targets(trues_log)
+    preds_sec = from_log(preds_log)          # (num_samples, N, 2)
+    trues_sec = from_log(trues_log)
+
 
     # CHANGED: report metrics per channel (ch0=departure, ch1=arrival)
     for ch, name in enumerate(["Departure", "Arrival"]):
-        mae  = float(np.abs(preds[..., ch] - trues[..., ch]).mean())
-        rmse = float(np.sqrt(((preds[..., ch] - trues[..., ch]) ** 2).mean()))
+        mae  = float(np.abs(preds_sec[..., ch] - trues_sec[..., ch]).mean())
+        rmse = float(np.sqrt(((preds_sec[..., ch] - trues_sec[..., ch]) ** 2).mean()))
         print(f"\n{name}  MAE : {mae:.1f} sec")
         print(f"{name} RMSE : {rmse:.1f} sec")
 
@@ -131,14 +159,14 @@ def eval_model(model, loader, laplacian):
     for name, score in zip(feature_names, feat_importance):
         print(f"{name}: {score:.4f}")
 
-    mae_overall = float(np.abs(preds - trues).mean())
-    return preds, trues, mae_overall
+    mae_overall = float(np.abs(preds_sec - trues_sec).mean())
+    return preds_sec, trues_sec, mae_overall
 
 
 preds, trues, mae = eval_model(model, test_loader, laplacian)
 
 # updated station feature names to match new F+2 input
-station_feature_names  = STATION_FEATURE_COLS + ["lagged_dep", "lagged_arr"]
+station_feature_names  = STATION_FEATURE_COLS #+ ["lagged_dep", "lagged_arr"]
 external_feature_names = EXTERNAL_COLS
 
 # permutation_importance calls compute_mae_seconds internally;
@@ -150,9 +178,15 @@ importances = permutation_importance(
     laplacian,
     station_feature_names,
     external_feature_names,
-    tg_min
+    tg_min,
+    target_scaler=target_scaler,
+    n_repeats=3
+
 )
-print(importances)
+print("\nPermutation importances (delta MAE seconds):")
+for k, v in sorted(importances.items(), key=lambda x: -x[1]):
+    print(f"  {k:45s}  {v:+.2f} s")
+
 
 # -- plotting ------------------------------------------------------------------
 # preds/trues are (num_samples, N, 2). Plot each channel separately.
