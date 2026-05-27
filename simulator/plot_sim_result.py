@@ -2,13 +2,16 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 
-FILE_NAME = "sbi_calibrated_2025-01-01"
+FILE_NAME = "sim_with_SBI_long"
 BASELINE_NAME = "normal_weather.csv"
 
 df_sim = pd.read_csv(f"simulator\data\{FILE_NAME}.csv")
 #df_sim = pd.read_csv("simulator/data/normal_weather.csv")
 df_sim["OPERATION_PLANNED_TIMESTAMP"] = pd.to_datetime(df_sim["OPERATION_PLANNED_TIMESTAMP"], format="%Y-%m-%d %H:%M:%S", utc=True)
+#df_sim = df_sim[df_sim["SIMULATED_DELAY"] < 5000]
 df_sim = df_sim.sort_values(by="OPERATION_PLANNED_TIMESTAMP")
+print(df_sim.shape)
+
 
 # ── Load baseline (no injection) for comparison ───────────────────────────────
 df_base = pd.read_csv(f"simulator/data/{BASELINE_NAME}")
@@ -18,9 +21,12 @@ df_base["OPERATION_PLANNED_TIMESTAMP"] = pd.to_datetime(
 df_base = df_base.sort_values("OPERATION_PLANNED_TIMESTAMP")
 
 df_true = pd.read_parquet("data/train_data_weather.parquet")
-df_true = df_true[df_true["OPERATIONAL_DAY"] == "2025-01-01"]
+df_true = df_true[
+    df_true["OPERATION_PLANNED_TIMESTAMP"].dt.date.isin(
+        df_sim["OPERATION_PLANNED_TIMESTAMP"].dt.date)]
 df_true["OPERATION_PLANNED_TIMESTAMP"] = pd.to_datetime(df_true["OPERATION_PLANNED_TIMESTAMP"], format="%Y-%m-%d %H:%M:%S.%f %z", utc=True)
 df_true = df_true.sort_values(by="OPERATION_PLANNED_TIMESTAMP")
+
 
 # Merge on the closest timestamp by train_number
 df_merged = pd.merge_asof(
@@ -30,8 +36,11 @@ df_merged = pd.merge_asof(
     right_on="OPERATION_PLANNED_TIMESTAMP",
     by="TRAIN_NUMBER",
     direction="nearest",
-    tolerance=pd.Timedelta('10min')
+    tolerance=pd.Timedelta('10min'),
+
 )
+
+print(df_merged.shape)
 
 true_series = df_merged["DAILY_PLAN_OPERATIONAL_DELAY_SEC_x"]
 pred_series = df_merged["SIMULATED_DELAY"]

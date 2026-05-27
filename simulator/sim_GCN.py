@@ -31,9 +31,10 @@ class GCNPredictor:
 
     def __init__(
         self,
-        model_path:   str,
+        model_path: str,
         scaler_path:  str,
-        stats_path:   str,
+        stats_path: str,
+        target_scaler_path: str,
         station_list_path: str,
         hidden_dim=64, K=3, num_blocks=3, horizon=1,
         num_station_features=12, num_external_features=6,
@@ -46,6 +47,9 @@ class GCNPredictor:
             self.scaler = pickle.load(f)
         with open(stats_path) as f:
             self.tg_min = json.load(f)["tg_min"]
+
+        with open(target_scaler_path, "rb") as f:
+            self.target_scaler = pickle.load(f)
 
         self.laplacian = prepare_laplacian(station_list_path, self.device)
         self.station_order = LINE_ORDER  # must match training order
@@ -91,7 +95,13 @@ class GCNPredictor:
         # Append lagged targets AFTER scaling (they weren't included in scaler fit)
         lagged_targets = np.zeros((T, N, 2), dtype=np.float32)
         if T > 1:
-            lagged_targets[1:] = target_arr[:-1]
+            lagged_raw = target_arr[:-1]  # (T-1, N, 2)
+            lagged_log = np.log1p(np.clip(lagged_raw - self.tg_min, 0, None))
+            sh = lagged_log.shape
+            lagged_norm = self.target_scaler.transform(
+                lagged_log.reshape(-1, 2)
+            ).reshape(sh)
+            lagged_targets[1:] = lagged_norm
 
         # Final shape: (T, N, 12)
         station_arr_full = np.concatenate([station_arr_norm, lagged_targets], axis=-1)
@@ -121,35 +131,31 @@ class GCNPredictor:
         ext = torch.tensor(ext).unsqueeze(0).to(self.device)           # (1, E)
         ext = ext.unsqueeze(1).expand(-1, x.shape[1], -1)              # (1, SEQ_LEN, E)
 
-        pred_log = self.model(x, ext, self.laplacian).squeeze(0).cpu().numpy()  # (N, horizon, 2)
+        pred_norm = self.model(x, ext, self.laplacian).squeeze(0).cpu().numpy()  # (N, horizon, 2)
+        sh = pred_norm.shape
+        pred_log = self.target_scaler.inverse_transform(
+            pred_norm.reshape(-1, 2)
+        ).reshape(sh)
         pred_sec = np.expm1(pred_log) + self.tg_min
         return pred_sec
 
-    def predict_entry_delays(
+    def predict_station_priors(
         self,
-        df_day:   pd.DataFrame,
-        timetable,              
-    ) -> dict[int, float]:
+        df_day: pd.DataFrame,
+    ) -> dict[str, float]:
         """
-        Returns {train_number: predicted_entry_delay_sec} for every train
-        in the timetable.  Entry station is the first stop in the schedule
-        (BI for BI→NE trains, NE for NE→BI trains).
-        Uses the GCN's predicted departure delay at that station.
-        """
-        pred_sec = self.predict_all_stations(df_day)  # (N, 2)
+        Returns {station_abbr: predicted_departure_delay_sec} for every
+        station in LINE_ORDER.
+        This is a station-level prior: one value per terminus (BI, NE)
+        representing the expected delay climate for trains departing from
+        that station on this day.  Individual trains sample around this
+        prior inside TrainProcess """
 
+        pred_sec = self.predict_all_stations(df_day)   # (N, horizon, 2)
         station_to_idx = {s: i for i, s in enumerate(self.station_order)}
-        entry_delays   = {}
+        priors: dict[str, float] = {}
 
-        for schedule in timetable.schedules:
-            entry_station = schedule.stops[0].station
-            idx = station_to_idx.get(entry_station)
-            if idx is None:
-                entry_delays[schedule.train_number] = 0.0
-                continue
-            # col 0 = departure delay — what we want at the origin
-            predicted = float(pred_sec[idx,0, 0])
-            # Clip negatives: we don't want to start trains early
-            entry_delays[schedule.train_number] = max(0.0, predicted)
-
-        return entry_delays
+        for station, idx in station_to_idx.items():
+            # col 0 = departure delay
+            priors[station] = float(pred_sec[idx, 0, 0])
+        return priors

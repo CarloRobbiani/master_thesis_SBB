@@ -1,45 +1,32 @@
 """
-sim_sbi.py — Simulation-Based Inference calibration for the railway simulator
-==============================================================================
 
-Uses the `sbi` package (Neural Posterior Estimation) to infer the posterior
-distribution over uncertain simulator parameters given observed delay statistics.
+# 0. Load your speed factors JSON
+import json
+with open("simulator/weather_factors.json") as f:
+    speed_factors = json.load(f)
 
-Install
--------
-    pip install sbi torch
+# 1. Fit the posterior on your observed data
+posterior, x_obs = run_sbi(
+    df_raw=df_raw,
+    day="2025-01-15",
+    PLANNED_SEGMENT_TIMES=PLANNED_SEGMENT_TIMES,
+    speed_factors=speed_factors,
+    num_simulations=2000,
+)
 
-Usage
------
-    from sim_sbi import RailwayPrior, build_simulator_fn, run_sbi, posterior_summary
+# 2. Sample best parameters and inspect
+samples = posterior.sample((1000,), x=x_obs)
+posterior_summary(samples)
 
-    # 0. Load your speed factors JSON
-    import json
-    with open("simulator/weather_factors.json") as f:
-        speed_factors = json.load(f)
+# 3. Save MAP estimate into the "learned" block of the JSON
+save_learned_params(samples.mean(dim=0), speed_factors,
+                    json_path="simulator/weather_factors.json")
 
-    # 1. Fit the posterior on your observed data
-    posterior, x_obs = run_sbi(
-        df_raw=df_raw,
-        day="2025-01-15",
-        PLANNED_SEGMENT_TIMES=PLANNED_SEGMENT_TIMES,
-        speed_factors=speed_factors,
-        num_simulations=2000,
-    )
-
-    # 2. Sample best parameters and inspect
-    samples = posterior.sample((1000,), x=x_obs)
-    posterior_summary(samples)
-
-    # 3. Save MAP estimate into the "learned" block of the JSON
-    save_learned_params(samples.mean(dim=0), speed_factors,
-                        json_path="simulator/weather_factors.json")
-
-    # 4. Run the simulator with MAP estimate
-    map_params = samples.mean(dim=0)
-    result = run_with_params(map_params, df_raw, "2025-01-15",
-                             PLANNED_SEGMENT_TIMES, speed_factors=speed_factors)
-    print(result.summary())
+# 4. Run the simulator with MAP estimate
+map_params = samples.mean(dim=0)
+result = run_with_params(map_params, df_raw, "2025-01-15",
+                            PLANNED_SEGMENT_TIMES, speed_factors=speed_factors)
+print(result.summary())
 """
 
 from __future__ import annotations
@@ -64,11 +51,13 @@ from sim_weather import WeatherConditions, WeatherTimeline
 from sim_timetable import Timetable
 from sim_topology import build_planned_segment_times
 from Simulator import RailwaySimulator
+from sim_GCN import GCNPredictor
+import os
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 # 1. PARAMETER SPACE
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 
 class SBIParams:
     """
@@ -94,7 +83,6 @@ class SBIParams:
         switch_fail_moderate : prob when snow >= 10 cm                 [0.02, 0.20]
         switch_fail_low      : prob when snow >= 5 cm                  [0.005, 0.10]
 
-    Ordering must match NAMES / LOWERS / UPPERS exactly.
     """
 
     # JSON speed-factor keys in the same order as the tensor (after the 2 noise params)
@@ -109,8 +97,8 @@ class SBIParams:
     NAMES = ["sigma_travel", "sigma_dwell"] + SF_KEYS
 
     #         sig_tr  sig_dw  air_t  whe    wh    wm    rh    rm    rl    sh    sl   sfh    sfm    sfl
-    LOWERS = [0.01,   1.0,   0.80,  0.50, 0.70, 0.80, 0.70, 0.80, 0.90, 0.50, 0.70, 0.05, 0.02, 0.005]
-    UPPERS = [0.15,  30.0,   1.00,  0.90, 0.95, 1.00, 0.95, 1.00, 1.00, 0.90, 0.95, 0.40, 0.20, 0.10 ]
+    LOWERS = [0.01,   1.0,   0.70,  0.40, 0.60, 0.70, 0.60, 0.70, 0.80, 0.45, 0.60, 0.05, 0.02, 0.005]
+    UPPERS = [0.15,  30.0,   1.00,  0.95, 0.95, 1.00, 0.95, 1.00, 1.00, 0.90, 0.95, 0.40, 0.20, 0.20 ]
 
     def __init__(
         self,
@@ -179,9 +167,9 @@ def make_prior() -> BoxUniform:
     return BoxUniform(low=low, high=high)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 # 2. PATCHED SIMULATOR HELPERS
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 
 def _make_patched_speed_factors(base_sf: dict, p: SBIParams) -> dict:
     """
@@ -204,8 +192,7 @@ def _patch_weather_conditions(wc: WeatherConditions, p: SBIParams,
                                base_sf: dict) -> WeatherConditions:
     """
     Return a new WeatherConditions instance whose speed_factors dict has
-    been updated to reflect the SBI parameter values.  No subclassing needed
-    because WeatherConditions.speed_factor() already reads from self.speed_factors.
+    been updated to reflect the SBI parameter values.
     """
     patched_sf = _make_patched_speed_factors(base_sf, p)
     return WeatherConditions(
@@ -229,13 +216,6 @@ def _patch_timeline(timeline: WeatherTimeline, p: SBIParams,
 
 
 def _patch_train_process_noise(p: SBIParams):
-    """
-    Monkey-patch the `random.gauss` calls inside TrainProcess.run() by
-    injecting a module-level override.  Simpler than subclassing the process.
-
-    We store the params in a thread-local-like global so the patched gauss
-    function can read them.
-    """
     import sim_processes as sp
 
     _orig_gauss = random.gauss
@@ -261,9 +241,9 @@ def _restore_gauss(orig_gauss, sp_module):
     sp_module.random.gauss = orig_gauss
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 # 3. SUMMARY STATISTICS
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 
 def compute_summary(result) -> Tensor:
     """
@@ -374,9 +354,9 @@ def observed_summary(df_raw: pd.DataFrame, day: str) -> Tensor:
     return torch.tensor(stats, dtype=torch.float32)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 # 4. SIMULATOR WRAPPER (theta → x)
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 
 def build_simulator_fn(
     df_raw: pd.DataFrame,
@@ -384,6 +364,8 @@ def build_simulator_fn(
     PLANNED_SEGMENT_TIMES: dict,
     speed_factors: dict,
     seed: Optional[int] = None,
+    GCN = None,
+    df_day: Optional[pd.DataFrame] = None
 ):
     """
     Returns a callable  f(theta: Tensor) -> Tensor  compatible with sbi.
@@ -410,12 +392,23 @@ def build_simulator_fn(
         try:
             patched_timeline = _patch_timeline(weather_timeline, p, speed_factors)
 
-            sim = RailwaySimulator(
-                PLANNED_SEGMENT_TIMES=PLANNED_SEGMENT_TIMES,
-                timetable=tt,
-                weather=patched_timeline,
-                seed=seed,
-            )
+            if GCN is not None:
+                sim = RailwaySimulator(
+                    PLANNED_SEGMENT_TIMES=PLANNED_SEGMENT_TIMES,
+                    timetable=tt,
+                    weather=patched_timeline,
+                    seed=seed,
+                    GCN=GCN,
+                    df_day = df_day
+                )
+            else: 
+                sim = RailwaySimulator(
+                    PLANNED_SEGMENT_TIMES=PLANNED_SEGMENT_TIMES,
+                    timetable=tt,
+                    weather=patched_timeline,
+                    df_day=df_day,
+                    seed=seed
+                    )
             result = sim.run()
             return compute_summary(result)
 
@@ -429,9 +422,9 @@ def build_simulator_fn(
     return simulator
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 # 5. MAIN SBI RUNNER
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 
 def run_sbi(
     df_raw: pd.DataFrame,
@@ -441,6 +434,8 @@ def run_sbi(
     num_simulations: int = 2000,
     training_batch_size: int = 50,
     seed: int = 42,
+    GCN = None,
+    df_day: Optional[pd.DataFrame] = None
 ):
     """
     Run the full SBI pipeline:
@@ -467,7 +462,8 @@ def run_sbi(
 
     prior     = make_prior()
     simulator = build_simulator_fn(df_raw, day, PLANNED_SEGMENT_TIMES,
-                                   speed_factors=speed_factors, seed=None)
+                                   speed_factors=speed_factors, seed=None,
+                                   GCN=GCN, df_day=df_day)
     x_obs     = observed_summary(df_raw, day)
 
     print(f"[SBI] Observed summary statistics for {day}:")
@@ -513,9 +509,9 @@ def run_sbi(
     return posterior, x_obs
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 # 6. MULTI-DAY SBI (pool simulations across several days)
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 
 def run_sbi_multiday(
     df_raw: pd.DataFrame,
@@ -524,6 +520,8 @@ def run_sbi_multiday(
     speed_factors: dict,
     num_simulations_per_day: int = 1000,
     seed: int = 42,
+    GCN = None,
+    df_day: Optional[pd.DataFrame] = None
 ):
     """
     Pool simulations across multiple days for a more robust posterior.
@@ -553,7 +551,8 @@ def run_sbi_multiday(
     for day in days:
         print(f"\n[SBI] Day {day}: building simulator …")
         simulator = build_simulator_fn(df_raw, day, PLANNED_SEGMENT_TIMES,
-                                       speed_factors=speed_factors, seed=None)
+                                       speed_factors=speed_factors, seed=None,
+                                       GCN=GCN, df_day=df_day)
         x_obs_dict[day] = observed_summary(df_raw, day)
 
         theta_day, x_day = simulate_for_sbi(
@@ -590,9 +589,9 @@ def run_sbi_multiday(
     return posterior, x_obs_dict, x_obs_mean
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 # 7. ANALYSIS UTILITIES
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 
 def posterior_summary(samples: Tensor, ci: float = 0.9):
     """
@@ -671,26 +670,18 @@ def run_with_params(
 
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 # 7b. SAVE LEARNED PARAMETERS TO JSON
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 
 def save_learned_params(
     samples: "Tensor",
     base_sf: dict,
-    json_path: str = "simulator/weather_factors.json",
+    json_path: str = os.path.join("simulator", "weather_factors.json"),
     ci: float = 0.9,
+    use_GCN: Optional[bool] = False
 ) -> dict:
     """
-    Write the SBI posterior MAP estimate into the "learned" block of the
-    weather_factors.json file so the simulator can use it via
-    weather_type="learned".
-
-    All 12 JSON speed-factor keys are written from the MAP estimate.
-    sigma_travel and sigma_dwell are not in the JSON but are stored in
-    _sbi_meta so they are not lost.  Per-parameter credible intervals
-    are also stored in _sbi_meta for reference.
-
     Parameters
     ----------
     samples   : (N, 14) posterior samples tensor from posterior.sample()
@@ -730,7 +721,10 @@ def save_learned_params(
     learned["sigma_dwell"] = round(float(p_map.sigma_dwell),  4)
 
     updated_sf = copy.deepcopy(base_sf)
-    updated_sf["learned"] = learned
+    if use_GCN:
+        updated_sf["learned_GCN"] = learned
+    else:
+        updated_sf["learned"] = learned
 
     path = Path(json_path)
     with open(path, "w") as f:
@@ -747,15 +741,16 @@ def save_learned_params(
     return updated_sf
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 8. ENTRY POINT — quick demo
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
+# 8. ENTRY POINT
+# ------------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import sys, pickle, os
     from pathlib import Path
 
-    data_path = sys.argv[1] if len(sys.argv) > 1 else "data/train_data_weather.parquet"
+    
+    data_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join("data", "train_data_weather.parquet")
     day_arg   = sys.argv[2] if len(sys.argv) > 2 else None
     n_sims    = int(sys.argv[3]) if len(sys.argv) > 3 else 500   # reduce for quick test
 
@@ -769,7 +764,8 @@ if __name__ == "__main__":
     day = day_arg or available[0]
 
     # Load or build segment times
-    pkl = "simulator/timetable.pkl"
+    
+    pkl = os.path.join("simulator", "timetable.pkl")
     if os.path.isfile(pkl):
         with open(pkl, "rb") as f:
             PLANNED_SEGMENT_TIMES = pickle.load(f)
@@ -794,9 +790,21 @@ if __name__ == "__main__":
 
     # Load speed factors from JSON
     import json
-    json_path = "simulator/weather_factors.json"
+    
+    json_path = os.path.join("simulator", "weather_factors.json")
     with open(json_path) as f:
         speed_factors = json.load(f)
+
+    
+    
+    
+    gcn = GCNPredictor(
+    model_path        = os.path.join("graph_models", "station_graph", "best_matgcn.pt"),
+    scaler_path       = os.path.join("data", "feat_scaler.pkl"),
+    stats_path        = os.path.join("data", "train_stats.json"),
+    target_scaler_path= os.path.join("data", "target_scaler.pkl"),
+    station_list_path = os.path.join("data", "station_list.csv"),
+    )
 
     print(f"Running SBI on day {day} with {n_sims} simulations …\n")
 
@@ -809,7 +817,8 @@ if __name__ == "__main__":
         seed=42,
     ) """
 
-    list_of_days = ["2025-01-01", "2025-01-20", "2025-02-15", "2025-03-15"]
+    list_of_days = ["2025-01-01", "2025-01-20", "2025-02-15", "2025-03-15",
+                    "2025-01-03", "2025-01-15", "2025-02-01", "2025-03-01"]
     posterior, x_obs_dict, x_obs_mean = run_sbi_multiday(
         df_raw=df_raw,
         days=list_of_days,
@@ -817,6 +826,8 @@ if __name__ == "__main__":
         speed_factors=speed_factors,
         num_simulations_per_day=n_sims,
         seed=42,
+        GCN=None,
+        df_day = df_raw[df_raw["OPERATIONAL_DAY"] == day]
     )
 
     # Sample from the posterior
@@ -826,10 +837,12 @@ if __name__ == "__main__":
     posterior_summary(samples)
 
     prior = make_prior()
-    plot_posterior(samples, prior, save_path="simulator/images/posterior_pairplot.png")
+    #save_p = os.path.join("simulator", "images", posterior_pairplot.png)
+    #plot_posterior(samples, prior, save_path="simulator/images/posterior_pairplot.png")
 
     # Save MAP estimate into the "learned" block of the JSON
-    speed_factors = save_learned_params(samples, speed_factors, json_path=json_path)
+    speed_factors = save_learned_params(samples, speed_factors, json_path=json_path,
+                                        use_GCN=False)
 
     # Run the simulator with the calibrated parameters
     map_theta = samples.mean(dim=0)
@@ -837,4 +850,4 @@ if __name__ == "__main__":
     result = run_with_params(map_theta, df_raw, day, PLANNED_SEGMENT_TIMES,
                              speed_factors=speed_factors)
     print(result.summary())
-    result.to_csv(f"simulator/data/sbi_calibrated_{day}.csv")
+    result.to_csv(f"simulator/data/sbi_calibrated_withGCN_{day}.csv")

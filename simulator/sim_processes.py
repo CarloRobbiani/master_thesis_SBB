@@ -8,6 +8,7 @@ import random
 from typing import Optional
 import json
 import math
+import os
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SIMPY PROCESSES
@@ -63,9 +64,11 @@ class TrainProcess:
         self.category = schedule.category
         self.param_type = param_type 
         self.inject_delay = inject_delay
-        self.entry_delays_sec = entry_delays_sec
+        self.station_priors = entry_delays_sec
 
-        with open("simulator\weather_factors.json") as f:
+        
+
+        with open(os.path.join("simulator", "weather_factors.json")) as f:
             self.speed_factors = json.load(f)
  
     def _ts_to_sim(self, ts: datetime) -> float:
@@ -166,6 +169,7 @@ class TrainProcess:
             # ── 4. ARRIVAL ────────────────────────────────────────────────────
             if arr_stop is not None:
                 arr_planned_sim = self._ts_to_sim(arr_stop.planned_ts)
+                #arr_planned_sim = self._ts_to_sim(arr_stop.actual_ts)
 
                 # If this is the very first event and no travel has happened yet,
                 # the train is arriving from outside the corridor. Wait until the
@@ -234,9 +238,19 @@ class TrainProcess:
                 yield self.env.timeout(wait)
 
                 # Seed with GCN prediction
-                if self.entry_delays_sec is not None:
-                    self.current_delay = self.entry_delays_sec
-                    yield self.env.timeout(self.entry_delays_sec)
+                if self.station_priors is not None:
+                    entry_station = dep_stop.station
+                    prior_mean = self.station_priors.get(entry_station, 0.0)
+                    # Sample around the station-level prior.
+                    # std is calibrated to typical per-train spread (~30s);
+                    # negative samples are clipped — we don't start trains early.
+                    prior_std  = 30.0
+                    entry_delay = max(0.0, random.gauss(prior_mean, prior_std))
+                    #print(f"Entry Delay: {entry_delay}")
+                    self.current_delay = entry_delay
+                    yield self.env.timeout(entry_delay)
+
+
 
                 # Seed with the real initial delay if available
                 elif not math.isnan(dep_stop.actual_delay):

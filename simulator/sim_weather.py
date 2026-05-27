@@ -106,7 +106,7 @@ class WeatherConditions:
     
 
     @classmethod
-    def from_meteoswiss_row(cls, row: pd.Series) -> "WeatherConditions":
+    def from_meteoswiss_row(cls, row: pd.Series, speed_factors=None) -> "WeatherConditions":
         """Create WeatherConditions from a MeteoSwiss data row matching training features."""
         return cls(
             tre200s0       = float(row.get("tre200s0", 15.0)),  # temp C
@@ -114,8 +114,8 @@ class WeatherConditions:
             fkl010z1    = float(row.get("fkl010z1", 0.0)),    # gust peak
             rre150z0    = float(row.get("rre150z0", 0.0)),  # rain fall
             htoauts0       = float(row.get("htoauts0", 0.0)),   # snow height at the moment
-            hto000d0    = float(row.get("hto000d0", 0.0))   # snow at 6am in Neuchatel
-            
+            hto000d0    = float(row.get("hto000d0", 0.0)),   # snow at 6am in Neuchatel
+            speed_factors = speed_factors
         )
  
     def __str__(self) -> str:
@@ -161,11 +161,14 @@ class WeatherTimeline:
                     "rre150z0", "htoauts0", "hto000d0"]
 
 
-    def __init__(self,speed_factors, snapshots: list[tuple[float, WeatherConditions]]):
+    def __init__(self,speed_factors, 
+                 snapshots: list[tuple[float, WeatherConditions]],
+                 param_type = "normal"):
 
         if not snapshots:
-            snapshots = [(0.0, WeatherConditions(speed_factors=speed_factors))]
-
+            snapshots = [(0.0, WeatherConditions(
+                param_type=param_type, speed_factors=speed_factors
+            ))]
         # Ensure sorted
         self._times = [t for t, _ in snapshots]
         self._conds = [c for _, c in snapshots]
@@ -240,14 +243,15 @@ class WeatherTimeline:
         # Keep only weather columns + time; drop rows missing all weather cols
         weather_cols_present = [c for c in cls.WEATHER_COLS if c in day_df.columns]
         if not weather_cols_present:
-            return cls([(0.0, WeatherConditions())])
+            return cls(speed_factors, [(0.0, WeatherConditions(speed_factors=speed_factors))])
 
 
         day_df = day_df[[time_col] + weather_cols_present].copy()
         day_df = day_df.dropna(subset=weather_cols_present, how="all")
 
         if day_df.empty:
-            return cls([(0.0, WeatherConditions())])
+            return cls(speed_factors, [(0.0, WeatherConditions(speed_factors=speed_factors))])
+
 
         # Compute seconds from midnight for each row
         midnight = pd.Timestamp(day)
@@ -281,7 +285,7 @@ class WeatherTimeline:
         snapshots: list[tuple[float, WeatherConditions]] = []
 
         for _, row in day_df.iterrows():
-            cond = WeatherConditions.from_meteoswiss_row(row)
+            cond = WeatherConditions.from_meteoswiss_row(row, speed_factors)
             snapshots.append((float(row["_sim_time"]), cond))
 
         return cls(speed_factors, snapshots)

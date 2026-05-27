@@ -106,21 +106,17 @@ class RailwaySimulator:
  
         # -- Launch one process per train ----------------------------------------
         # Pre-compute GCN entry delays once, before launching processes
-        entry_delays: dict[int, float] = {}
+        station_priors: dict[str, float] | None = None
         if self.GCN is not None and self.df_day is not None:
-            entry_delays = self.GCN.predict_entry_delays(
-                self.df_day, self.timetable
-                )
+            station_priors = self.GCN.predict_station_priors(self.df_day)
+            # Diagnostic: print what the GCN predicts per station
+            #for st, delay in station_priors.items():
+             #   print(f"  GCN prior | {st}: {delay:+.1f}s")
         else: entry_delays = None
-     
-        for schedule in tt.schedules:
-            """ if schedule.train_number != 1506:
-                continue """
-            
-            if entry_delays is not None:
-                ed = entry_delays.get(schedule.train_number)
-            else: ed = None
 
+     
+        for schedule in tt.schedules:            
+            
             proc = TrainProcess(
                 PLANNED_SEGMENT_TIMES = self.PLANNED_SEGMENT_TIMES,
                 env          = env,
@@ -132,7 +128,7 @@ class RailwaySimulator:
                 day_start    = day_start,
                 param_type   = self.param_type,
                 inject_delay = self.inject_delay,
-                entry_delays_sec = ed
+                entry_delays_sec = station_priors
             )
             env.process(proc.run())
  
@@ -204,6 +200,65 @@ def weather_sensitivity(
         })
  
     return pd.DataFrame(rows)
+
+def run_ablation(
+    PLANNED_SEGMENT_TIMES: dict,
+    timetable:   Timetable,
+    weather:     WeatherTimeline,
+    gcn:         "GCNPredictor",
+    df_day:      pd.DataFrame,
+    seed:        int = 42,
+    n_runs:      int = 5,
+) -> pd.DataFrame:
+
+    """
+    Three-way ablation to quantify what each component contributes.
+    Conditions
+    cold_start      : zero entry delay, SBI-tuned propagation only
+    gcn_prior       : GCN station prior seeds entry delay, same propagation
+    gcn_prior_sbi   : same as gcn_prior but with learned SBI parameters
+    Each condition is repeated n_runs times (different random seeds) so that
+    the stochastic dwell/travel noise averages out.  Returns a tidy DataFrame
+    with one row per (condition, run).
+    """
+
+
+    conditions = [
+        ("cold_start",    None,  "normal"),
+        ("gcn_prior",     gcn,   "normal"),
+        ("gcn_prior_sbi", gcn,   "learned"),
+    ]
+    rows = []
+    for condition, gcn_arg, param_type in conditions:
+        for i in range(n_runs):
+            run_seed = seed + i
+            sim = RailwaySimulator(
+                PLANNED_SEGMENT_TIMES = PLANNED_SEGMENT_TIMES,
+                timetable  = timetable,
+                weather    = weather,
+                seed       = run_seed,
+                param_type = param_type,
+                GCN        = gcn_arg,
+                df_day     = df_day,
+          )
+            result = sim.run()
+            acc = result.accuracy()
+            pct = result.punctuality()
+            rows.append({
+                "condition":       condition,
+                "run":             i,
+                "seed":            run_seed,
+                "mae_sec":         acc["mae"],
+                "rmse_sec":        acc["rmse"],
+                "punctuality_sim": pct["simulated"],
+                "punctuality_act": pct["actual"],
+                "n_conflicts":     len(result.conflicts),
+                "n_events":        acc["n"],
+            })
+        print(f"  {condition}: done ({n_runs} runs)")
+    return pd.DataFrame(rows)
+
+
  
  
 # ------------------------------------------------------------------------------
@@ -267,7 +322,8 @@ if __name__ == "__main__":
     print(f"Loaded {len(tt.schedules)} train schedules")
 
     # Load the json file containing information on the speed factors
-    with open("simulator\weather_factors.json") as f:
+    
+    with open(os.path.join("simulator", "weather_factors.json")) as f:
         speed_factors = json.load(f)
 
  
@@ -308,13 +364,63 @@ if __name__ == "__main__":
 
     # -- Run 4: use model for initial delay -----------------
     gcn = GCNPredictor(
-    model_path        = "graph_models\station_graph/best_matgcn.pt",
-    scaler_path       = "data/feat_scaler.pkl",
-    stats_path        = "data/train_stats.json",
-    station_list_path = "data/station_list.csv",
-)
+    model_path        = os.path.join("graph_models", "station_graph", "best_matgcn.pt"),
+    scaler_path       = os.path.join("data", "feat_scaler.pkl"),
+    stats_path        = os.path.join("data", "train_stats.json"),
+    target_scaler_path= os.path.join("data", "target_scaler.pkl"),
+    station_list_path = os.path.join("data", "station_list.csv"),
+    )
+
     sim4 = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, weather_timeline, 
                             seed=42, GCN = gcn, df_day = df_raw[df_raw["OPERATIONAL_DAY"] == day])
     r4   = sim4.run()
     r4.to_csv("simulator/data/sim_with_GCN.csv")
     #print(r4.summary())
+
+    # -- Run 5: use learned SBI params --------------------
+
+    #days = df_raw.iloc[:int(len(df_raw) *0.3)]
+    days_unique = available[:int(len(available) *0.5)]
+    #days_unique = days["OPERATIONAL_DAY"].unique()
+
+    df_list = []
+    for day in days_unique:
+        print(day)
+        tt_day = Timetable.from_dataframe(df_raw, day)   #rebuild per day
+        weather_timeline_sbi = WeatherTimeline(
+            speed_factors=speed_factors, snapshots=None, param_type="normal"
+        ).from_day_dataframe(df_raw, day, speed_factors)
+        
+        sim5 = RailwaySimulator(
+            PLANNED_SEGMENT_TIMES, tt_day, weather_timeline_sbi, GCN=None,
+            param_type="normal", seed=42, df_day = df_raw[df_raw["OPERATIONAL_DAY"] == day]
+        )
+        r5 = sim5.run()
+        df = r5.to_dataframe()
+        df_list.append(df)
+
+    final_df = pd.concat(df_list, axis=0, ignore_index=True)
+    final_df.to_csv("simulator/data/sim_normal_long.csv", index=False)
+    #r5.to_csv("simulator/data/sim_with_sbi.csv")
+
+    # -- Run 6: three-way ablation ------------------------------
+    """ print("\n-- Run 5: ablation study --")
+    df_day = df_raw[df_raw["OPERATIONAL_DAY"] == day]
+    ablation_df = run_ablation(
+        PLANNED_SEGMENT_TIMES = PLANNED_SEGMENT_TIMES,
+        timetable = tt,
+        weather   = weather_timeline,
+        gcn       = gcn,
+        df_day    = df_day,
+        seed      = 42,
+        n_runs    = 5,
+    )
+    print("\nAblation results (mean over runs):")
+    print(
+        ablation_df
+        .groupby("condition")[["mae_sec", "rmse_sec", "punctuality_sim"]]
+        .mean()
+        .round(1)
+        .to_string()
+    )
+    ablation_df.to_csv("simulator/data/ablation.csv", index=False) """

@@ -244,9 +244,12 @@ plt.show()
 # -- hourly analysis ---------------------------------------
 raw_df = pd.read_parquet(DATA_PATH)
 raw_df = raw_df.sort_values("OPERATION_PLANNED_TIMESTAMP")
-timestamps = raw_df["OPERATION_PLANNED_TIMESTAMP"].iloc[
+""" timestamps = raw_df["OPERATION_PLANNED_TIMESTAMP"].iloc[
     t_val + SEQ_LEN : t_val + SEQ_LEN + len(preds)
-].reset_index(drop=True)
+].reset_index(drop=True) """
+
+pivoted_timestamps = raw_df["OPERATION_PLANNED_TIMESTAMP"].sort_values().unique()
+timestamps = pd.Series(pivoted_timestamps[t_val + SEQ_LEN : t_val + SEQ_LEN + len(preds)])
 
 num_samples, num_stations, _ = preds.shape  # unpack 3 dims
 expanded_hours = np.repeat(timestamps.dt.hour.values, num_stations)
