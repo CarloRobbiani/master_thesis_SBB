@@ -47,7 +47,7 @@ DEVICE      = device
 # ── load data ─────────────────────────────────────────────────────────────────
 print("Loading data …")
 station_arr, external_arr, target_arr, stations = load_and_pivot(
-    DATA_PATH, STATION_FEATURE_COLS, EXTERNAL_COLS
+    DATA_PATH, STATION_FEATURE_COLS, EXTERNAL_COLS, sim=True
 )
 # target_arr is now (T, N, 2): ch0=departure, ch1=arrival
 

@@ -145,7 +145,7 @@ def filter_tensors(data_tensor: torch.Tensor, train_end, val_end, timestamps):
     return data_tensor[train_idx], data_tensor[val_idx], data_tensor[test_idx]
 
 
-def load_and_pivot(path: str, STATION_FEATURE_COLS, EXTERNAL_COLS):
+def load_and_pivot(path: str, STATION_FEATURE_COLS, EXTERNAL_COLS, sim = False):
     """
     Load the parquet/csv file and return arrays for the MATGCN model.
 
@@ -156,14 +156,16 @@ def load_and_pivot(path: str, STATION_FEATURE_COLS, EXTERNAL_COLS):
         target_arr   : np.ndarray (T, N, 2)  — [dep_delay, arr_delay] in seconds
         stations     : list[str]
     """
-    if path.endswith(".parquet"):
+    if not sim:
         df = pd.read_parquet(path)
         TARGET_COL = "DAILY_PLAN_OPERATIONAL_DELAY_SEC"
-    elif path.endswith(".csv"):
-        df = pd.read_csv(path)
-        TARGET_COL = "SIMULATED_DELAY"
     else:
-        raise ValueError(f"Unsupported file format: {path}")
+        if path.endswith(".csv"):
+            df = pd.read_csv(path)
+        else:
+            df = pd.read_parquet(path)
+        TARGET_COL = "SIMULATED_DELAY"
+
 
     STATION_COL = "OPERATING_POINT_ABBREVIATION"
     DATE_COL    = "OPERATION_PLANNED_TIMESTAMP"

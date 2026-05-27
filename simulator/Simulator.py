@@ -388,19 +388,19 @@ if __name__ == "__main__":
         print(day)
         tt_day = Timetable.from_dataframe(df_raw, day)   #rebuild per day
         weather_timeline_sbi = WeatherTimeline(
-            speed_factors=speed_factors, snapshots=None, param_type="normal"
+            speed_factors=speed_factors, snapshots=None, param_type="learned"
         ).from_day_dataframe(df_raw, day, speed_factors)
         
         sim5 = RailwaySimulator(
             PLANNED_SEGMENT_TIMES, tt_day, weather_timeline_sbi, GCN=None,
-            param_type="normal", seed=42, df_day = df_raw[df_raw["OPERATIONAL_DAY"] == day]
+            param_type="learned", seed=42, df_day = df_raw[df_raw["OPERATIONAL_DAY"] == day]
         )
         r5 = sim5.run()
         df = r5.to_dataframe()
         df_list.append(df)
 
     final_df = pd.concat(df_list, axis=0, ignore_index=True)
-    final_df.to_csv("simulator/data/sim_normal_long.csv", index=False)
+    final_df.to_csv("simulator/data/sim_with_SBI_long.csv", index=False)
     #r5.to_csv("simulator/data/sim_with_sbi.csv")
 
     # -- Run 6: three-way ablation ------------------------------

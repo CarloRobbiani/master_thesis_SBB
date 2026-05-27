@@ -216,29 +216,28 @@ def _patch_timeline(timeline: WeatherTimeline, p: SBIParams,
 
 
 def _patch_train_process_noise(p: SBIParams):
+    """
+    Patch sim_processes noise parameters explicitly rather than intercepting
+    random.gauss by sigma magnitude (which is fragile and breaks silently).
+
+    Sets module-level constants in sim_processes that TrainProcess reads
+    directly, so there is no ambiguity about which gauss call gets scaled.
+    """
     import sim_processes as sp
 
-    _orig_gauss = random.gauss
+    orig_sigma_travel = getattr(sp, "SIGMA_TRAVEL", 0.05)
+    orig_sigma_dwell  = getattr(sp, "SIGMA_DWELL",  5.0)
 
-    def _patched_gauss(mu, sigma):
-        # The simulator calls gauss in two places:
-        #   travel_noise = gauss(0, weather_travel * 0.05)   → 5% of travel time
-        #   dwell_noise  = abs(gauss(0, 5))                  → 5 s std dev
-        # We intercept by checking the sigma magnitude:
-        #   sigma ~ 0.05 * 60..300 s  → 3..15 s  → travel noise
-        #   sigma == 5                → dwell noise
-        if 1 < sigma < 50:            # travel noise call
-            return _orig_gauss(mu, sigma * (p.sigma_travel / 0.05))
-        elif abs(sigma - 5) < 0.1:   # dwell noise call
-            return _orig_gauss(mu, p.sigma_dwell)
-        return _orig_gauss(mu, sigma)
+    sp.SIGMA_TRAVEL = float(p.sigma_travel)
+    sp.SIGMA_DWELL  = float(p.sigma_dwell)
 
-    sp.random.gauss = _patched_gauss   # type: ignore[attr-defined]
-    return _orig_gauss, sp
+    return (orig_sigma_travel, orig_sigma_dwell), sp
 
 
-def _restore_gauss(orig_gauss, sp_module):
-    sp_module.random.gauss = orig_gauss
+def _restore_gauss(orig_sigmas, sp_module):
+    orig_sigma_travel, orig_sigma_dwell = orig_sigmas
+    sp_module.SIGMA_TRAVEL = orig_sigma_travel
+    sp_module.SIGMA_DWELL  = orig_sigma_dwell
 
 
 # ------------------------------------------------------------------------------
@@ -249,27 +248,17 @@ def compute_summary(result) -> Tensor:
     """
     Compress a SimResult into a fixed-length summary statistic vector.
 
-    Chosen statistics (12 total):
-    ─────────────────────────────
-    Delay distribution (departures only, vs plan):
+    Returns only the 6 statistics that can also be computed from real data
+    (see observed_summary), so that simulated and observed summaries live in
+    the same space.  Simulator-internal statistics (conflicts, weather cause
+    fraction) are excluded because they have no observed counterpart and
+    previously caused the NPE to learn spurious mappings toward zero.
+
+    Statistics (departures only, vs plan):
       [0]  mean delay
       [1]  std delay
       [2]  median delay
       [3]  90th percentile delay
-      [4]  fraction > 180 s (late by Swiss standard)
-      [5]  fraction < -30 s (early departures)
-
-    Conflict statistics:
-      [6]  total number of conflicts
-      [7]  mean conflict wait (s); 0 if no conflicts
-
-    Error vs ground truth (where actual delay is known):
-      [8]  MAE
-      [9]  RMSE
-      [10] bias (mean signed error)
-
-    Cause mix:
-      [11] fraction of events with a weather cause
     """
     df = result.to_dataframe()
     deps = df[df["EVENT_TYPE"] == "departure"]
@@ -278,46 +267,44 @@ def compute_summary(result) -> Tensor:
     if len(d) == 0:
         d = np.array([0.0])
 
-    mean_d  = float(np.mean(d))
-    std_d   = float(np.std(d))
-    med_d   = float(np.median(d))
-    p90_d   = float(np.percentile(d, 90))
-    frac_late  = float(np.mean(d > 180))
-    frac_early = float(np.mean(d < -30))
+    stats = [
+        float(np.mean(d)),
+        float(np.std(d)),
+        float(np.median(d)),
+        float(np.percentile(d, 90)),
+    ]
 
-    cf = result.conflicts
-    n_conflicts = float(len(cf))
-    mean_wait   = float(np.mean([c.waited_sec for c in cf])) if cf else 0.0
-
-    # Accuracy vs ground truth
-    acc = result.accuracy()
-    mae  = acc["mae"]  if not np.isnan(acc["mae"])  else 0.0
-    rmse = acc["rmse"] if not np.isnan(acc["rmse"]) else 0.0
-
+    # Per-train accuracy vs ground truth (only where actual is known)
     valid = deps.dropna(subset=["DAILY_PLAN_OPERATIONAL_DELAY_SEC"])
     if not valid.empty:
-        bias = float((valid["SIMULATED_DELAY"] - valid["DAILY_PLAN_OPERATIONAL_DELAY_SEC"]).mean())
+        err = valid["SIMULATED_DELAY"] - valid["DAILY_PLAN_OPERATIONAL_DELAY_SEC"]
+        stats += [
+            float(err.abs().mean()),          # MAE
+            float(err.mean()),                 # bias
+        ]
     else:
-        bias = 0.0
+        stats += [0.0, 0.0]
 
-    # Weather cause fraction
-    causes_col = df["causes"].fillna("")
-    frac_weather = float((causes_col.str.contains("weather")).mean())
-
-    stats = [
-        mean_d, std_d, med_d, p90_d,
-        frac_late, frac_early,
-        n_conflicts, mean_wait,
-        mae, rmse, bias,
-        frac_weather,
-    ]
     return torch.tensor(stats, dtype=torch.float32)
+
+
+# Indices of summary statistics that can be computed from real data.
+# Conflict and cause statistics are simulator-internal and must be excluded
+# from both observed and simulated summaries used for conditioning.
+_OBS_DIMS = [0, 1, 2, 3, 4, 5]   # mean, std, median, p90, frac_late, frac_early
+_OBS_NAMES = [
+    "mean_delay", "std_delay", "median_delay",
+    "p90_delay",  "frac_late", "frac_early",
+]
 
 
 def observed_summary(df_raw: pd.DataFrame, day: str) -> Tensor:
     """
-    Compute the same summary statistics directly from the *real* operational data
-    (no simulation needed).  This is the x_o we condition the posterior on.
+    Compute summary statistics from real operational data.
+
+    Only includes statistics that are directly observable from ground-truth
+    data, avoiding the zero-padding that previously corrupted the posterior.
+    The returned vector has length 6 and matches _OBS_DIMS of compute_summary.
     """
     df = df_raw.copy()
     df["OPERATION_PLANNED_TIMESTAMP"] = pd.to_datetime(df["OPERATION_PLANNED_TIMESTAMP"])
@@ -329,28 +316,14 @@ def observed_summary(df_raw: pd.DataFrame, day: str) -> Tensor:
     if len(d) == 0:
         d = np.array([0.0])
 
-    mean_d  = float(np.mean(d))
-    std_d   = float(np.std(d))
-    med_d   = float(np.median(d))
-    p90_d   = float(np.percentile(d, 90))
-    frac_late  = float(np.mean(d > 180))
-    frac_early = float(np.mean(d < -30))
-
-    # No conflict / cause info in raw data — fill with zeros
-    n_conflicts  = 0.0
-    mean_wait    = 0.0
-    mae          = 0.0
-    rmse         = 0.0
-    bias         = 0.0
-    frac_weather = 0.0
-
     stats = [
-        mean_d, std_d, med_d, p90_d,
-        frac_late, frac_early,
-        n_conflicts, mean_wait,
-        mae, rmse, bias,
-        frac_weather,
+        float(np.mean(d)),
+        float(np.std(d)),
+        float(np.median(d)),
+        float(np.percentile(d, 90)),
     ]
+
+    stats += [0.0, 0.0]
     return torch.tensor(stats, dtype=torch.float32)
 
 
@@ -414,7 +387,7 @@ def build_simulator_fn(
 
         except Exception as exc:
             warnings.warn(f"Simulation failed: {exc}; returning NaN summary.")
-            return torch.full((12,), float("nan"))
+            return torch.full((6,), float("nan"))
 
         finally:
             _restore_gauss(orig_gauss, sp_mod)
@@ -467,12 +440,7 @@ def run_sbi(
     x_obs     = observed_summary(df_raw, day)
 
     print(f"[SBI] Observed summary statistics for {day}:")
-    for name, val in zip(
-        ["mean_delay","std_delay","median_delay","p90_delay",
-         "frac_late","frac_early","n_conflicts","mean_wait",
-         "MAE","RMSE","bias","frac_weather"],
-        x_obs.tolist()
-    ):
+    for name, val in zip(_OBS_NAMES, x_obs.tolist()):
         print(f"        {name:<20} {val:+.2f}")
 
     print(f"\n[SBI] Running {num_simulations} simulations …")
@@ -526,17 +494,18 @@ def run_sbi_multiday(
     """
     Pool simulations across multiple days for a more robust posterior.
 
-    Each (theta, x) pair is associated with the summary statistics of one
-    specific day, so the inference jointly calibrates over all days.
-    The x_obs returned is a stacked tensor of all observed summaries.
+    For best results, ``days`` should be stratified across delay regimes:
+    include low-delay days (mean < 30s), medium-delay days, and at least
+    2-3 high-delay days (mean > 90s, e.g. winter storm days).  This ensures
+    the NPE sees enough variation to learn weather and switch-failure params.
 
-    This works because NPE supports amortised inference: once trained, you can
-    condition on the x_obs of any individual day without re-training.
+    Recommended num_simulations_per_day: ≥ 1000 for 14 parameters.
+    Total training set should be ≥ 5000 for publication quality.
 
     Returns
     -------
     posterior   : amortised posterior, conditioned on any single day's x_obs
-    x_obs_dict  : {day: Tensor} — observed summaries per day
+    x_obs_dict  : {day: Tensor} — observed summaries per day (length 6)
     x_obs_mean  : Tensor — mean observed summary across all days
     """
     torch.manual_seed(seed)
@@ -545,7 +514,7 @@ def run_sbi_multiday(
     prior = make_prior()
     all_theta, all_x = [], []
 
-    SUMMARY_DIM = 12  # length of the vector returned by compute_summary()
+    SUMMARY_DIM = 6  # matches the trimmed compute_summary / observed_summary
 
     x_obs_dict = {}
     for day in days:
@@ -555,6 +524,12 @@ def run_sbi_multiday(
                                        GCN=GCN, df_day=df_day)
         x_obs_dict[day] = observed_summary(df_raw, day)
 
+        print(f"[SBI] Day {day} observed summary: "
+              f"mean={x_obs_dict[day][0]:+.1f}s  "
+              f"std={x_obs_dict[day][1]:.1f}s  "
+              f"p90={x_obs_dict[day][3]:+.1f}s  "
+              f"frac_late={x_obs_dict[day][4]:.2%}")
+
         theta_day, x_day = simulate_for_sbi(
             simulator=simulator,
             proposal=prior,
@@ -562,7 +537,6 @@ def run_sbi_multiday(
             num_workers=1,
         )
 
-        # Ensure 2-D: simulate_for_sbi may return a flat tensor on some sbi versions
         if x_day.dim() == 1:
             x_day = x_day.reshape(num_simulations_per_day, SUMMARY_DIM)
 
@@ -582,9 +556,6 @@ def run_sbi_multiday(
     posterior = inference.build_posterior(density_estimator)
 
     print("[SBI] Multi-day training done.")
-    # Return both the per-day dict AND the mean summary so callers can do either:
-    #   posterior.sample((N,), x=x_obs_dict["2025-01-01"])   # single day
-    #   posterior.sample((N,), x=x_obs_mean)                 # average across days
     x_obs_mean = torch.stack(list(x_obs_dict.values())).mean(dim=0)
     return posterior, x_obs_dict, x_obs_mean
 
@@ -752,7 +723,7 @@ if __name__ == "__main__":
     
     data_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join("data", "train_data_weather.parquet")
     day_arg   = sys.argv[2] if len(sys.argv) > 2 else None
-    n_sims    = int(sys.argv[3]) if len(sys.argv) > 3 else 500   # reduce for quick test
+    n_sims    = int(sys.argv[3]) if len(sys.argv) > 3 else 1000   # reduce for quick test
 
     p = Path(data_path)
     df_raw = pd.read_parquet(p) if p.suffix == ".parquet" else pd.read_csv(p)
@@ -832,8 +803,8 @@ if __name__ == "__main__":
 
     # Sample from the posterior
     #samples = posterior.sample((2000,), x=x_obs) # Use this LOC for single day sim
-    #samples = posterior.sample((2000,), x=x_obs_mean)
-    samples = posterior.sample((2000,), x=x_obs_dict["2025-01-01"])
+    samples = posterior.sample((20000,), x=x_obs_mean)
+    #samples = posterior.sample((2000,), x=x_obs_dict["2025-01-01"])
     posterior_summary(samples)
 
     prior = make_prior()
