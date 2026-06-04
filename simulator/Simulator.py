@@ -380,7 +380,7 @@ if __name__ == "__main__":
     # -- Run 5: use learned SBI params --------------------
 
     #days = df_raw.iloc[:int(len(df_raw) *0.3)]
-    days_unique = available[:int(len(available) *0.5)]
+    days_unique = available[:int(len(available))]
     #days_unique = days["OPERATIONAL_DAY"].unique()
 
     df_list = []
@@ -400,7 +400,7 @@ if __name__ == "__main__":
         df_list.append(df)
 
     final_df = pd.concat(df_list, axis=0, ignore_index=True)
-    final_df.to_csv("simulator/data/sim_with_SBI_long.csv", index=False)
+    final_df.to_parquet("simulator/data/sim_training.parquet", index=False)
     #r5.to_csv("simulator/data/sim_with_sbi.csv")
 
     # -- Run 6: three-way ablation ------------------------------

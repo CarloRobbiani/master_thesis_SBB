@@ -21,7 +21,8 @@ from delay_dataset import DelayDataset
 # 0.  CONFIGURATION
 # ----------------------------------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-DATA_PATH = os.path.join("data", "train_data_weather.parquet")
+#DATA_PATH = os.path.join("data", "train_data_weather.parquet")
+DATA_PATH = os.path.join("simulator", "data", "sim_training.parquet")
 
 STATION_FEATURE_COLS = [
     "EVENT_TYPE",
@@ -119,7 +120,7 @@ def main():
 
     print("Loading data …")
     station_arr, external_arr, target_arr, stations = load_and_pivot(
-        DATA_PATH, STATION_FEATURE_COLS, EXTERNAL_COLS
+        DATA_PATH, STATION_FEATURE_COLS, EXTERNAL_COLS, sim=True
     )
     N     = len(stations)
     T     = len(station_arr)
@@ -215,7 +216,7 @@ def main():
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save(model.state_dict(), "best_matgcn.pt")
+            torch.save(model.state_dict(), "best_matgcn_for_sim.pt")
 
         print(f"{epoch:>5}  {train_loss:>12.4f}  {val_loss:>10.4f}  "
               f"{val_mae:>11.1f}  {val_rmse:>12.1f}  {current_lr:>10.2e}")

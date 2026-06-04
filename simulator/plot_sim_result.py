@@ -51,6 +51,18 @@ KM = {"BI": 0, "TUE": 9.5, "TWN": 14.2, "LIG": 16.8, "NV": 20.3,
       "LD": 24.1, "CRNE": 27.0, "CORN": 29.8, "SBL": 33.2, "NE": 38.0}
 SINGLE_TRACK = (KM["TWN"], KM["LIG"])
 
+
+mask_no_delay = true_series < 60
+mask_med_delay = (true_series >= 60) & (true_series < 180)
+mask_big_delay =  true_series >= 180
+mask_list = [mask_no_delay, mask_med_delay, mask_big_delay]
+
+for mask in mask_list:
+    pred_mask = pred_series[mask]
+    true_mask = true_series[mask]
+    error = np.abs(pred_mask - true_mask).mean()
+    print(f"error: {error}; sample size {len(true_mask)}")
+
 fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
 # Left: scatter plot (predicted vs actual)

@@ -11,7 +11,10 @@ my_xgboost = XGBoostBaseline()
 import matplotlib.pyplot as plt
 
 
-df = pd.read_parquet("data/train_data_weather.parquet")
+df_real = pd.read_parquet("data/train_data_weather.parquet")
+df_real = df_real.sort_values("OPERATION_PLANNED_TIMESTAMP")
+
+df = pd.read_parquet("simulator\data\sim_training.parquet")
 
 df = df.sort_values("OPERATION_PLANNED_TIMESTAMP")
 
@@ -20,8 +23,15 @@ df["hour_cos"] = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 2
 df["dow_sin"] = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
 df["dow_cos"] = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
 
+df_real["hour_sin"] = np.sin(2 * np.pi * df_real["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 24)
+df_real["hour_cos"] = np.cos(2 * np.pi * df_real["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 24)
+df_real["dow_sin"] = np.sin(2 * np.pi * df_real["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
+df_real["dow_cos"] = np.cos(2 * np.pi * df_real["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
+
 df["hto000d0"] = df["hto000d0"].fillna(0)
-df = df.drop(["date", "days"], axis=1)
+if "date" in df.columns:   
+    df = df.drop(["date", "days"], axis=1)
+    df_real = df_real.drop(["date", "days"], axis=1)
 
 
 
@@ -29,13 +39,16 @@ df = df.drop(["date", "days"], axis=1)
 for col in df.select_dtypes(include=["int64", "float64"]).columns:
     df[col] = pd.to_numeric(df[col], downcast="float")
 
-target_col = 'DAILY_PLAN_OPERATIONAL_DELAY_SEC'
+#target_col = 'DAILY_PLAN_OPERATIONAL_DELAY_SEC'
+target_col = 'SIMULATED_DELAY'
 X,Y = preprocess_train(df, target_column=target_col)
+X_real, y_real = preprocess_train(df_real, target_column="DAILY_PLAN_OPERATIONAL_DELAY_SEC")
 
 X_train, X_val, X_test, y_train, y_val, y_test = time_split(X, Y)
+X_train_r, X_val_r, X_test_r, y_train_r, y_val_r, y_test_r = time_split(X_real, y_real)
 my_xgboost.fit(X, Y, X_val, y_val)
 
-prediction = my_xgboost.predict(X_test)
+prediction = my_xgboost.predict(X_test_r)
 
 my_xgboost.plot_loss()
 
@@ -45,13 +58,24 @@ val_end = int(len(X) * (0.7 + 0.15))
 actual_timestamps = df.iloc[val_end:]["OPERATION_PLANNED_TIMESTAMP"]
 fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
+mask_no_delay = y_test_r < 60
+mask_med_delay = (y_test_r >= 60) & (y_test_r < 180)
+mask_big_delay =  y_test_r >= 180
+mask_list = [mask_no_delay, mask_med_delay, mask_big_delay]
+
 
 if plot_len is not None:
     pred_series = prediction[:plot_len]
-    true_series = y_test[:plot_len]
+    true_series = y_test_r[:plot_len]
 else:
     pred_series = prediction
-    true_series = y_test
+    true_series = y_test_r
+
+for mask in mask_list:
+    pred_mask = pred_series[mask]
+    true_mask = true_series[mask]
+    error = np.abs(pred_mask[:,0] - true_mask).mean()
+    print(f"error: {error}; sample size {len(true_mask)}")
 
 
 axes[0].scatter(true_series, pred_series, alpha=0.5, s=20, color="steelblue", label="Predictions")
@@ -78,7 +102,7 @@ axes[1].set_title("Prediction Error Distribution")
 axes[1].legend()
 
 plt.tight_layout()
-plt.savefig("images/Xgboost_comparison.png")
+plt.savefig("images/Xgboost_comparison_simmed.png")
 plt.show()
 
 
@@ -174,4 +198,4 @@ importance_df = my_xgboost.permutation_importance(
     n_repeats=5
 )
 
-print(importance_df.head(10))
+print(importance_df)

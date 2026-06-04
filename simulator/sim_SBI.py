@@ -56,7 +56,7 @@ import os
 
 
 # ------------------------------------------------------------------------------
-# 1. PARAMETER SPACE
+# PARAMETER SPACE
 # ------------------------------------------------------------------------------
 
 class SBIParams:
@@ -98,7 +98,7 @@ class SBIParams:
 
     #         sig_tr  sig_dw  air_t  whe    wh    wm    rh    rm    rl    sh    sl   sfh    sfm    sfl
     LOWERS = [0.01,   1.0,   0.70,  0.40, 0.60, 0.70, 0.60, 0.70, 0.80, 0.45, 0.60, 0.05, 0.02, 0.005]
-    UPPERS = [0.15,  30.0,   1.00,  0.95, 0.95, 1.00, 0.95, 1.00, 1.00, 0.90, 0.95, 0.40, 0.20, 0.20 ]
+    UPPERS = [0.08,   8.0,   1.00,  0.95, 0.95, 1.00, 0.95, 1.00, 1.00, 0.90, 0.95, 0.10, 0.10, 0.10 ]
 
     def __init__(
         self,
@@ -168,7 +168,7 @@ def make_prior() -> BoxUniform:
 
 
 # ------------------------------------------------------------------------------
-# 2. PATCHED SIMULATOR HELPERS
+# PATCHED SIMULATOR HELPERS
 # ------------------------------------------------------------------------------
 
 def _make_patched_speed_factors(base_sf: dict, p: SBIParams) -> dict:
@@ -241,7 +241,7 @@ def _restore_gauss(orig_sigmas, sp_module):
 
 
 # ------------------------------------------------------------------------------
-# 3. SUMMARY STATISTICS
+# SUMMARY STATISTICS
 # ------------------------------------------------------------------------------
 
 def compute_summary(result) -> Tensor:
@@ -323,12 +323,12 @@ def observed_summary(df_raw: pd.DataFrame, day: str) -> Tensor:
         float(np.percentile(d, 90)),
     ]
 
-    stats += [0.0, 0.0]
+    stats += [35.0, 0.0] # Add expected MAE similar to the one in the normal sim data
     return torch.tensor(stats, dtype=torch.float32)
 
 
 # ------------------------------------------------------------------------------
-# 4. SIMULATOR WRAPPER (theta → x)
+# SIMULATOR WRAPPER (theta → x)
 # ------------------------------------------------------------------------------
 
 def build_simulator_fn(
@@ -396,7 +396,7 @@ def build_simulator_fn(
 
 
 # ------------------------------------------------------------------------------
-# 5. MAIN SBI RUNNER
+# MAIN SBI RUNNER
 # ------------------------------------------------------------------------------
 
 def run_sbi(
@@ -450,7 +450,7 @@ def run_sbi(
         simulator=simulator,
         proposal=prior,
         num_simulations=num_simulations,
-        num_workers=1,           # set > 1 if your OS supports forking safely
+        num_workers=1,           
     )
 
     # simulate_for_sbi returns x with shape [num_simulations, summary_dim];
@@ -478,7 +478,7 @@ def run_sbi(
 
 
 # ------------------------------------------------------------------------------
-# 6. MULTI-DAY SBI (pool simulations across several days)
+# MULTI-DAY SBI (pool simulations across several days)
 # ------------------------------------------------------------------------------
 
 def run_sbi_multiday(
@@ -561,7 +561,7 @@ def run_sbi_multiday(
 
 
 # ------------------------------------------------------------------------------
-# 7. ANALYSIS UTILITIES
+# ANALYSIS UTILITIES
 # ------------------------------------------------------------------------------
 
 def posterior_summary(samples: Tensor, ci: float = 0.9):
@@ -642,7 +642,7 @@ def run_with_params(
 
 
 # ------------------------------------------------------------------------------
-# 7b. SAVE LEARNED PARAMETERS TO JSON
+# SAVE LEARNED PARAMETERS TO JSON
 # ------------------------------------------------------------------------------
 
 def save_learned_params(
@@ -713,7 +713,7 @@ def save_learned_params(
 
 
 # ------------------------------------------------------------------------------
-# 8. ENTRY POINT
+# ENTRY POINT
 # ------------------------------------------------------------------------------
 
 if __name__ == "__main__":
@@ -723,7 +723,7 @@ if __name__ == "__main__":
     
     data_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join("data", "train_data_weather.parquet")
     day_arg   = sys.argv[2] if len(sys.argv) > 2 else None
-    n_sims    = int(sys.argv[3]) if len(sys.argv) > 3 else 1000   # reduce for quick test
+    n_sims    = int(sys.argv[3]) if len(sys.argv) > 3 else 2000   # reduce for quick test
 
     p = Path(data_path)
     df_raw = pd.read_parquet(p) if p.suffix == ".parquet" else pd.read_csv(p)
@@ -788,8 +788,7 @@ if __name__ == "__main__":
         seed=42,
     ) """
 
-    list_of_days = ["2025-01-01", "2025-01-20", "2025-02-15", "2025-03-15",
-                    "2025-01-03", "2025-01-15", "2025-02-01", "2025-03-01"]
+    list_of_days = ['2025-02-19', '2025-02-12', '2025-01-27', '2025-02-11', '2025-03-19', '2025-03-08', '2025-03-27', '2025-03-16', '2025-02-21', '2025-02-05', '2025-02-13', '2025-03-25']
     posterior, x_obs_dict, x_obs_mean = run_sbi_multiday(
         df_raw=df_raw,
         days=list_of_days,

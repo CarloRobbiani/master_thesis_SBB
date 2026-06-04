@@ -108,7 +108,8 @@ model = StationMATGCN(
     horizon    = HORIZON,
 ).to(DEVICE)
 
-model.load_state_dict(torch.load("graph_models/station_graph/best_matgcn.pt", map_location=DEVICE))
+#model.load_state_dict(torch.load("graph_models/station_graph/best_matgcn.pt", map_location=DEVICE))
+model.load_state_dict(torch.load("graph_models/station_graph/best_matgcn_for_sim.pt", map_location=DEVICE))
 
 station_list_path = os.path.join("data", "station_list.csv")
 laplacian = prepare_laplacian(station_list_path, DEVICE)
@@ -172,7 +173,7 @@ external_feature_names = EXTERNAL_COLS
 # permutation_importance calls compute_mae_seconds internally;
 # that function uses pred.mean(dim=-1) which collapses the horizon dim.
 # compute_mae_seconds in utils.py needs updating too
-importances = permutation_importance(
+""" importances = permutation_importance(
     model,
     test_loader,
     laplacian,
@@ -185,7 +186,7 @@ importances = permutation_importance(
 )
 print("\nPermutation importances (delta MAE seconds):")
 for k, v in sorted(importances.items(), key=lambda x: -x[1]):
-    print(f"  {k:45s}  {v:+.2f} s")
+    print(f"  {k:45s}  {v:+.2f} s") """
 
 
 # -- plotting ------------------------------------------------------------------
@@ -211,6 +212,21 @@ for ch, ch_name in enumerate(["Departure", "Arrival"]):
     if WINDOW is not None:
         pred_series = pred_series[:WINDOW]
         true_series = true_series[:WINDOW]
+    
+    te_tg_raw = target_arr[t_val + SEQ_LEN : t_val + SEQ_LEN + len(preds)]   #seconds
+    mask_no_delay  = te_tg_raw[..., ch] < 60
+    mask_med_delay = (te_tg_raw[..., ch] >= 60) & (te_tg_raw[..., ch] < 180)
+    mask_big_delay = te_tg_raw[..., ch] >= 180
+    mask_list = [mask_no_delay, mask_med_delay, mask_big_delay]
+
+
+    print(ch_name)
+    for mask in mask_list:
+        flat_mask = mask.ravel()
+        pred_mask = pred_series[flat_mask]
+        true_mask = true_series[flat_mask]
+        error = np.abs(pred_mask - true_mask).mean()
+        print(f"error: {error:.1f}s; sample size {len(true_mask)}")
 
     # Scatter
     ax = axes[ch, 0]
