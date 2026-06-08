@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --account=gratis
 #SBATCH --job-name="Train MATGCN model"
-#SBATCH --time=02:00:00
+#SBATCH --time=08:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=1G

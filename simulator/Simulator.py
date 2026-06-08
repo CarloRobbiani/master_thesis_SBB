@@ -260,6 +260,7 @@ def run_ablation(
 
 
  
+
  
 # ------------------------------------------------------------------------------
 # ENTRY POINT — demo when run directly
@@ -379,7 +380,7 @@ if __name__ == "__main__":
 
     # -- Run 5: use learned SBI params --------------------
 
-    #days = df_raw.iloc[:int(len(df_raw) *0.3)]
+    """ #days = df_raw.iloc[:int(len(df_raw) *0.3)]
     days_unique = available[:int(len(available))]
     #days_unique = days["OPERATIONAL_DAY"].unique()
 
@@ -400,7 +401,7 @@ if __name__ == "__main__":
         df_list.append(df)
 
     final_df = pd.concat(df_list, axis=0, ignore_index=True)
-    final_df.to_parquet("simulator/data/sim_training.parquet", index=False)
+    final_df.to_parquet("simulator/data/sim_training.parquet", index=False) """
     #r5.to_csv("simulator/data/sim_with_sbi.csv")
 
     # -- Run 6: three-way ablation ------------------------------
@@ -424,3 +425,47 @@ if __name__ == "__main__":
         .to_string()
     )
     ablation_df.to_csv("simulator/data/ablation.csv", index=False) """
+
+    # -- Run 7 test different bad weather scenarios
+    print("Run 7 testing scenarios")
+
+    days_unique = available[:int(len(available)*0.2)]
+    print(len(days_unique))
+
+    param_type = "learned"
+
+
+    SCENARIO_BASES = {
+    "heavy_rain":     dict(tre200s0=8,  fu3010z0=5,  rre150z0=15, htoauts0=0),
+    "mild_snow":      dict(tre200s0=-2, fu3010z0=8,  rre150z0=3,  htoauts0=8),
+    "blizzard":       dict(tre200s0=-8, fu3010z0=25, rre150z0=5,  htoauts0=30),
+    "heat_crosswind": dict(tre200s0=32, fu3010z0=18, rre150z0=0,  htoauts0=0),
+    "freezing_rain":  dict(tre200s0=-1, fu3010z0=10, rre150z0=6,  htoauts0=2),
+    }
+
+    def generate_weather(name):
+        base = SCENARIO_BASES[name]
+
+        return WeatherConditions(
+            tre200s0=base["tre200s0"] + random.uniform(-2, 2),
+            fu3010z0=base["fu3010z0"] + random.uniform(-3, 3),
+            rre150z0=max(0, base["rre150z0"] + random.uniform(-2, 2)),
+            htoauts0=max(0, base["htoauts0"] + random.uniform(-5, 5)),
+            speed_factors=speed_factors,
+            param_type=param_type,
+        )
+
+    for scenario_name in SCENARIO_BASES:
+        print(f"Simulating for {scenario_name}")
+        df_list = []
+        for day in days_unique:
+            weather = generate_weather(scenario_name)
+            tt_day = Timetable.from_dataframe(df_raw, day)
+            sim = RailwaySimulator(
+                PLANNED_SEGMENT_TIMES, tt_day, weather,
+                param_type="learned", seed=42
+            )
+            df = sim.run().to_dataframe()
+            df["scenario"] = scenario_name
+            df_list.append(df)
+        pd.concat(df_list).to_parquet(f"simulator/data_scenarios/synthetic_{scenario_name}.parquet")

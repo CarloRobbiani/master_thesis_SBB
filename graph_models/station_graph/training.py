@@ -22,7 +22,8 @@ from delay_dataset import DelayDataset
 # ----------------------------------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 #DATA_PATH = os.path.join("data", "train_data_weather.parquet")
-DATA_PATH = os.path.join("simulator", "data", "sim_training.parquet")
+#DATA_PATH = os.path.join("simulator", "data", "sim_training.parquet")
+DATA_PATH = os.path.join("data", "train_data_augmented.parquet")
 
 STATION_FEATURE_COLS = [
     "EVENT_TYPE",
@@ -94,8 +95,8 @@ def evaluate(model, loader, criterion, laplacian, device,
         all_true.append(y.cpu().numpy())
 
     avg_loss = total_loss / len(loader.dataset)
-    preds    = np.concatenate(all_pred)   # (total, N, 2)
-    trues    = np.concatenate(all_true)
+    preds = np.concatenate(all_pred) # (total, N, 2)
+    trues = np.concatenate(all_true)
 
     # Invert target normalisation → log space
     sh    = preds.shape
@@ -120,21 +121,21 @@ def main():
 
     print("Loading data …")
     station_arr, external_arr, target_arr, stations = load_and_pivot(
-        DATA_PATH, STATION_FEATURE_COLS, EXTERNAL_COLS, sim=True
+        DATA_PATH, STATION_FEATURE_COLS, EXTERNAL_COLS, sim=False
     )
-    N     = len(stations)
-    T     = len(station_arr)
+    N = len(stations)
+    T = len(station_arr)
     F_raw = station_arr.shape[-1]
-    F     = F_raw + 2      # +2 lagged dep/arr channels added by DelayDataset
-    E     = external_arr.shape[-1]
+    F = F_raw + 2  # +2 lagged dep/arr channels added by DelayDataset
+    E = external_arr.shape[-1]
 
     # -- temporal split ------------------------------------------------
     t_train = int(T * TRAIN_RATIO)
-    t_val   = int(T * (TRAIN_RATIO + (1 - TRAIN_RATIO) / 2))
+    t_val = int(T * (TRAIN_RATIO + (1 - TRAIN_RATIO) / 2))
 
-    tr_st = station_arr[:t_train];       tr_ex = external_arr[:t_train];      tr_tg = target_arr[:t_train]
-    va_st = station_arr[t_train:t_val];  va_ex = external_arr[t_train:t_val]; va_tg = target_arr[t_train:t_val]
-    te_st = station_arr[t_val:];         te_ex = external_arr[t_val:];        te_tg = target_arr[t_val:]
+    tr_st = station_arr[:t_train]; tr_ex = external_arr[:t_train]; tr_tg = target_arr[:t_train]
+    va_st = station_arr[t_train:t_val]; va_ex = external_arr[t_train:t_val]; va_tg = target_arr[t_train:t_val]
+    te_st = station_arr[t_val:]; te_ex = external_arr[t_val:]; te_tg = target_arr[t_val:]
 
     print(f"\nSplit sizes → train: {len(tr_st)}, val: {len(va_st)}, test: {len(te_st)}")
 
@@ -216,7 +217,7 @@ def main():
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save(model.state_dict(), "best_matgcn_for_sim.pt")
+            torch.save(model.state_dict(), "best_matgcn_augmented.pt")
 
         print(f"{epoch:>5}  {train_loss:>12.4f}  {val_loss:>10.4f}  "
               f"{val_mae:>11.1f}  {val_rmse:>12.1f}  {current_lr:>10.2e}")
@@ -250,12 +251,12 @@ def main():
     preds_sec = np.expm1(preds_log) + tg_min
     trues_sec = np.expm1(trues_log) + tg_min
 
-    print(f"Test MAE  dep    : {np.abs(preds_sec[...,0] - trues_sec[...,0]).mean():>8.1f} sec")
-    print(f"Test MAE  arr    : {np.abs(preds_sec[...,1] - trues_sec[...,1]).mean():>8.1f} sec")
+    print(f"Test MAE dep : {np.abs(preds_sec[...,0] - trues_sec[...,0]).mean():>8.1f} sec")
+    print(f"Test MAE arr : {np.abs(preds_sec[...,1] - trues_sec[...,1]).mean():>8.1f} sec")
     print("Best model saved to best_matgcn.pt")
 
-    # -- permutation importance on test set ------------------
-    print("\nRunning permutation importance on test set...")
+    # -- permutation importance on test set ------
+    print("Running permutation importance on test set...")
     permutation_importance(
         model       = model,
         loader      = test_loader,

@@ -53,9 +53,9 @@ E = external_arr.shape[-1]
 t_train = int(T * TRAIN_RATIO)
 t_val   = int(T * (TRAIN_RATIO + (1 - TRAIN_RATIO) / 2))
 
-tr_st = station_arr[:t_train];      tr_tg = target_arr[:t_train]
+tr_st = station_arr[:t_train]; tr_tg = target_arr[:t_train]
 va_st = station_arr[t_train:t_val]; va_tg = target_arr[t_train:t_val]
-te_st = station_arr[t_val:];        te_ex = external_arr[t_val:]; te_tg = target_arr[t_val:]
+te_st = station_arr[t_val:]; te_ex = external_arr[t_val:]; te_tg = target_arr[t_val:]
 
 # -- normalize station features ------------------
 tr_st, va_st, te_st, _ = normalize(tr_st, va_st, te_st)
@@ -123,20 +123,19 @@ def eval_model(model, loader, laplacian):
         for x, ext, y in loader:
             x, ext, y = x.to(DEVICE), ext.to(DEVICE), y.to(DEVICE)
             pred, feat_weights = model(x, ext, laplacian, return_att=True)
-            # CHANGED: pred is (B, N, horizon, 2); squeeze horizon dim (=1)
-            pred = pred.squeeze(2)          # → (B, N, 2)
+            pred = pred.squeeze(2) # to (B, N, 2) from (B, N, HORIZON, 2)
             all_preds.append(pred.cpu().numpy())
-            all_trues.append(y.cpu().numpy())   # y is (B, N, 2)
+            all_trues.append(y.cpu().numpy())   #(B, N, 2)
             all_weights.append(feat_weights)
 
-    preds_log = np.concatenate(all_preds)   # (num_samples, N, 2)
-    trues_log = np.concatenate(all_trues)   # (num_samples, N, 2)
+    preds_log = np.concatenate(all_preds) # (num_samples, N, 2)
+    trues_log = np.concatenate(all_trues) # (num_samples, N, 2)
 
     sh = preds_log.shape
 
     preds_log = invert_targets(preds_log)
     trues_log = invert_targets(trues_log)
-    preds_sec = from_log(preds_log)          # (num_samples, N, 2)
+    preds_sec = from_log(preds_log) # (num_samples, N, 2)
     trues_sec = from_log(trues_log)
 
 

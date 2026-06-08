@@ -11,10 +11,11 @@ my_xgboost = XGBoostBaseline()
 import matplotlib.pyplot as plt
 
 
-df_real = pd.read_parquet("data/train_data_weather.parquet")
+#df_real = pd.read_parquet("data/train_data_weather.parquet") # IS NOW THE AUGMENTED DATASET
+df_real = pd.read_parquet("data/train_data_augmented.parquet")
 df_real = df_real.sort_values("OPERATION_PLANNED_TIMESTAMP")
 
-df = pd.read_parquet("simulator\data\sim_training.parquet")
+df = pd.read_parquet("simulator\data_scenarios\synthetic_freezing_rain.parquet")
 
 df = df.sort_values("OPERATION_PLANNED_TIMESTAMP")
 
@@ -46,9 +47,9 @@ X_real, y_real = preprocess_train(df_real, target_column="DAILY_PLAN_OPERATIONAL
 
 X_train, X_val, X_test, y_train, y_val, y_test = time_split(X, Y)
 X_train_r, X_val_r, X_test_r, y_train_r, y_val_r, y_test_r = time_split(X_real, y_real)
-my_xgboost.fit(X, Y, X_val, y_val)
+my_xgboost.fit(X_real, y_real, X_val_r, y_val_r)
 
-prediction = my_xgboost.predict(X_test_r)
+prediction = my_xgboost.predict(X_test)
 
 my_xgboost.plot_loss()
 
@@ -58,18 +59,18 @@ val_end = int(len(X) * (0.7 + 0.15))
 actual_timestamps = df.iloc[val_end:]["OPERATION_PLANNED_TIMESTAMP"]
 fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
-mask_no_delay = y_test_r < 60
-mask_med_delay = (y_test_r >= 60) & (y_test_r < 180)
-mask_big_delay =  y_test_r >= 180
+mask_no_delay = y_test < 60
+mask_med_delay = (y_test >= 60) & (y_test < 180)
+mask_big_delay =  y_test >= 180
 mask_list = [mask_no_delay, mask_med_delay, mask_big_delay]
 
 
 if plot_len is not None:
     pred_series = prediction[:plot_len]
-    true_series = y_test_r[:plot_len]
+    true_series = y_test[:plot_len]
 else:
     pred_series = prediction
-    true_series = y_test_r
+    true_series = y_test
 
 for mask in mask_list:
     pred_mask = pred_series[mask]
@@ -102,7 +103,7 @@ axes[1].set_title("Prediction Error Distribution")
 axes[1].legend()
 
 plt.tight_layout()
-plt.savefig("images/Xgboost_comparison_simmed.png")
+plt.savefig("images/Xgboost_aug_freezing_rain.png")
 plt.show()
 
 
