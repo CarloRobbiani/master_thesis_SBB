@@ -1,34 +1,3 @@
-"""
-
-# 0. Load your speed factors JSON
-import json
-with open("simulator/weather_factors.json") as f:
-    speed_factors = json.load(f)
-
-# 1. Fit the posterior on your observed data
-posterior, x_obs = run_sbi(
-    df_raw=df_raw,
-    day="2025-01-15",
-    PLANNED_SEGMENT_TIMES=PLANNED_SEGMENT_TIMES,
-    speed_factors=speed_factors,
-    num_simulations=2000,
-)
-
-# 2. Sample best parameters and inspect
-samples = posterior.sample((1000,), x=x_obs)
-posterior_summary(samples)
-
-# 3. Save MAP estimate into the "learned" block of the JSON
-save_learned_params(samples.mean(dim=0), speed_factors,
-                    json_path="simulator/weather_factors.json")
-
-# 4. Run the simulator with MAP estimate
-map_params = samples.mean(dim=0)
-result = run_with_params(map_params, df_raw, "2025-01-15",
-                            PLANNED_SEGMENT_TIMES, speed_factors=speed_factors)
-print(result.summary())
-"""
-
 from __future__ import annotations
 
 import random
@@ -40,10 +9,9 @@ import numpy as np
 import pandas as pd
 import torch
 from torch import Tensor
+import json
 
-# sbi imports — install with: pip install sbi
 from sbi import analysis as analysis
-
 from sbi.inference import NPE, simulate_for_sbi
 from sbi.utils import BoxUniform
 
@@ -55,15 +23,11 @@ from sim_GCN import GCNPredictor
 import os
 
 
-# ------------------------------------------------------------------------------
-# PARAMETER SPACE
-# ------------------------------------------------------------------------------
-
 class SBIParams:
     """
     All 14 uncertain simulator parameters.
 
-    Noise (not in JSON, patch random.gauss):
+    Noise:
         sigma_travel  : travel-time noise as fraction of planned time  [0.01, 0.15]
         sigma_dwell   : dwell noise std dev (seconds)                  [1, 30]
 
@@ -96,6 +60,7 @@ class SBIParams:
 
     NAMES = ["sigma_travel", "sigma_dwell"] + SF_KEYS
 
+    # Define lower and upper bounds for the parameters
     #         sig_tr  sig_dw  air_t  whe    wh    wm    rh    rm    rl    sh    sl   sfh    sfm    sfl
     LOWERS = [0.01,   1.0,   0.70,  0.40, 0.60, 0.70, 0.60, 0.70, 0.80, 0.45, 0.60, 0.05, 0.02, 0.005]
     UPPERS = [0.08,   8.0,   1.00,  0.95, 0.95, 1.00, 0.95, 1.00, 1.00, 0.90, 0.95, 0.10, 0.10, 0.10 ]
@@ -134,14 +99,12 @@ class SBIParams:
 
     @classmethod
     def from_tensor(cls, t: "Tensor") -> "SBIParams":
-        # simulate_for_sbi may pass a batched tensor of shape [1, 14] or [14]
         v = t.squeeze().tolist()
         if isinstance(v, float):
             raise ValueError(f"Expected a 1-D parameter vector, got scalar. Shape was {t.shape}")
         return cls(*v)
 
     def to_tensor(self) -> "Tensor":
-        import torch
         return torch.tensor([getattr(self, n) for n in self.NAMES], dtype=torch.float32)
 
     def to_speed_factors_patch(self) -> dict:
@@ -167,16 +130,12 @@ def make_prior() -> BoxUniform:
     return BoxUniform(low=low, high=high)
 
 
-# ------------------------------------------------------------------------------
-# PATCHED SIMULATOR HELPERS
-# ------------------------------------------------------------------------------
 
 def _make_patched_speed_factors(base_sf: dict, p: SBIParams) -> dict:
     """
     Build a patched speed_factors dict (same structure as weather_factors.json)
-    where ALL 12 speed-factor keys are replaced by the current SBI parameter
-    values.  Both 'normal' and 'learned' blocks are updated so the dict stays
-    self-consistent regardless of which weather_type the caller uses.
+    where all 12 speed-factor keys are replaced by the current SBI parameter
+    values
     """
     import copy
     patched = copy.deepcopy(base_sf)
@@ -218,10 +177,7 @@ def _patch_timeline(timeline: WeatherTimeline, p: SBIParams,
 def _patch_train_process_noise(p: SBIParams):
     """
     Patch sim_processes noise parameters explicitly rather than intercepting
-    random.gauss by sigma magnitude (which is fragile and breaks silently).
-
-    Sets module-level constants in sim_processes that TrainProcess reads
-    directly, so there is no ambiguity about which gauss call gets scaled.
+    random.gauss by sigma magnitude
     """
     import sim_processes as sp
 
@@ -240,25 +196,9 @@ def _restore_gauss(orig_sigmas, sp_module):
     sp_module.SIGMA_DWELL  = orig_sigma_dwell
 
 
-# ------------------------------------------------------------------------------
-# SUMMARY STATISTICS
-# ------------------------------------------------------------------------------
-
 def compute_summary(result) -> Tensor:
     """
-    Compress a SimResult into a fixed-length summary statistic vector.
-
-    Returns only the 6 statistics that can also be computed from real data
-    (see observed_summary), so that simulated and observed summaries live in
-    the same space.  Simulator-internal statistics (conflicts, weather cause
-    fraction) are excluded because they have no observed counterpart and
-    previously caused the NPE to learn spurious mappings toward zero.
-
-    Statistics (departures only, vs plan):
-      [0]  mean delay
-      [1]  std delay
-      [2]  median delay
-      [3]  90th percentile delay
+    Compress a SimResult into a fixed-length summary statistic
     """
     df = result.to_dataframe()
     deps = df[df["EVENT_TYPE"] == "departure"]
@@ -274,13 +214,13 @@ def compute_summary(result) -> Tensor:
         float(np.percentile(d, 90)),
     ]
 
-    # Per-train accuracy vs ground truth (only where actual is known)
+    # Per train accuracy vs ground truth (only where actual is known)
     valid = deps.dropna(subset=["DAILY_PLAN_OPERATIONAL_DELAY_SEC"])
     if not valid.empty:
         err = valid["SIMULATED_DELAY"] - valid["DAILY_PLAN_OPERATIONAL_DELAY_SEC"]
         stats += [
-            float(err.abs().mean()),          # MAE
-            float(err.mean()),                 # bias
+            float(err.abs().mean()), # MAE
+            float(err.mean()),   # bias
         ]
     else:
         stats += [0.0, 0.0]
@@ -288,9 +228,6 @@ def compute_summary(result) -> Tensor:
     return torch.tensor(stats, dtype=torch.float32)
 
 
-# Indices of summary statistics that can be computed from real data.
-# Conflict and cause statistics are simulator-internal and must be excluded
-# from both observed and simulated summaries used for conditioning.
 _OBS_DIMS = [0, 1, 2, 3, 4, 5]   # mean, std, median, p90, frac_late, frac_early
 _OBS_NAMES = [
     "mean_delay", "std_delay", "median_delay",
@@ -301,10 +238,6 @@ _OBS_NAMES = [
 def observed_summary(df_raw: pd.DataFrame, day: str) -> Tensor:
     """
     Compute summary statistics from real operational data.
-
-    Only includes statistics that are directly observable from ground-truth
-    data, avoiding the zero-padding that previously corrupted the posterior.
-    The returned vector has length 6 and matches _OBS_DIMS of compute_summary.
     """
     df = df_raw.copy()
     df["OPERATION_PLANNED_TIMESTAMP"] = pd.to_datetime(df["OPERATION_PLANNED_TIMESTAMP"])
@@ -327,10 +260,6 @@ def observed_summary(df_raw: pd.DataFrame, day: str) -> Tensor:
     return torch.tensor(stats, dtype=torch.float32)
 
 
-# ------------------------------------------------------------------------------
-# SIMULATOR WRAPPER (theta → x)
-# ------------------------------------------------------------------------------
-
 def build_simulator_fn(
     df_raw: pd.DataFrame,
     day: str,
@@ -345,12 +274,11 @@ def build_simulator_fn(
 
     Parameters
     ----------
-    df_raw                : raw operational + weather DataFrame
-    day                   : operational day string, e.g. "2025-01-15"
+    df_raw  : raw operational + weather DataFrame
+    day   : operational day string, e.g. "2025-01-15"
     PLANNED_SEGMENT_TIMES : pre-built segment time dict (pass the pickled one)
-    speed_factors         : dict loaded from weather_factors.json
-    seed                  : if set, fixes the random seed for reproducibility
-                            (set to None for stochastic SBI simulations)
+    speed_factors   : dict loaded from weather_factors.json
+    seed    
     """
     # Build timetable and base timeline once — shared across all simulations
     tt = Timetable.from_dataframe(df_raw, day)
@@ -359,7 +287,6 @@ def build_simulator_fn(
     def simulator(theta: Tensor) -> Tensor:
         p = SBIParams.from_tensor(theta)
 
-        # Patch noise
         orig_gauss, sp_mod = _patch_train_process_noise(p)
 
         try:
@@ -395,9 +322,6 @@ def build_simulator_fn(
     return simulator
 
 
-# ------------------------------------------------------------------------------
-# MAIN SBI RUNNER
-# ------------------------------------------------------------------------------
 
 def run_sbi(
     df_raw: pd.DataFrame,
@@ -412,18 +336,17 @@ def run_sbi(
 ):
     """
     Run the full SBI pipeline:
-      prior → simulate → train NPE → return posterior.
+      prior, simulate, train NPE, return posterior.
 
     Parameters
     ----------
-    df_raw               : raw operational + weather DataFrame
-    day                  : operational day to calibrate on
+    df_raw  : raw operational + weather DataFrame
+    day  : operational day to calibrate on
     PLANNED_SEGMENT_TIMES: pre-built segment time lookup dict
-    speed_factors        : dict loaded from weather_factors.json
-    num_simulations      : number of (theta, x) pairs to generate.
-                           ≥ 1000 recommended; 5000+ for publication quality.
-    training_batch_size  : mini-batch size for NPE training
-    seed                 : RNG seed for reproducibility
+    speed_factors  : dict loaded from weather_factors.json
+    num_simulations  : number of (theta, x) pairs to generate.
+    training_batch_size: mini-batch size for NPE training
+    seed : RNG seed for reproducibility
 
     Returns
     -------
@@ -454,7 +377,7 @@ def run_sbi(
     )
 
     # simulate_for_sbi returns x with shape [num_simulations, summary_dim];
-    # ensure it is 2D before filtering (older sbi versions may squeeze it).
+    # ensure it is 2D before filtering
     if x.dim() == 1:
         x = x.unsqueeze(0) if len(x) == 12 else x.reshape(num_simulations, -1)
 
@@ -473,13 +396,9 @@ def run_sbi(
 
     posterior = inference.build_posterior(density_estimator)
 
-    print("[SBI] Done. Use  posterior.sample((1000,), x=x_obs)  to draw samples.")
+    print("[SBI] Done. Use  posterior.sample((1000,), x=x_obs)  to draw samples")
     return posterior, x_obs
 
-
-# ------------------------------------------------------------------------------
-# MULTI-DAY SBI (pool simulations across several days)
-# ------------------------------------------------------------------------------
 
 def run_sbi_multiday(
     df_raw: pd.DataFrame,
@@ -492,21 +411,13 @@ def run_sbi_multiday(
     df_day: Optional[pd.DataFrame] = None
 ):
     """
-    Pool simulations across multiple days for a more robust posterior.
-
-    For best results, ``days`` should be stratified across delay regimes:
-    include low-delay days (mean < 30s), medium-delay days, and at least
-    2-3 high-delay days (mean > 90s, e.g. winter storm days).  This ensures
-    the NPE sees enough variation to learn weather and switch-failure params.
-
-    Recommended num_simulations_per_day: ≥ 1000 for 14 parameters.
-    Total training set should be ≥ 5000 for publication quality.
+    Pool simulations across multiple days for a more robust posterior
 
     Returns
     -------
     posterior   : amortised posterior, conditioned on any single day's x_obs
     x_obs_dict  : {day: Tensor} — observed summaries per day (length 6)
-    x_obs_mean  : Tensor — mean observed summary across all days
+    x_obs_mean  : mean observed summary across all days
     """
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -514,7 +425,7 @@ def run_sbi_multiday(
     prior = make_prior()
     all_theta, all_x = [], []
 
-    SUMMARY_DIM = 6  # matches the trimmed compute_summary / observed_summary
+    SUMMARY_DIM = 6  
 
     x_obs_dict = {}
     for day in days:
@@ -549,7 +460,7 @@ def run_sbi_multiday(
     x_all     = torch.cat(all_x, dim=0)
     print(f"\n[SBI] Total training set: {len(theta_all)} simulations, x shape {x_all.shape}")
 
-    print(f"[SBI] Training NPE …")
+    print(f"[SBI] Training NPE...")
     inference = NPE(prior=prior)
     inference.append_simulations(theta_all, x_all)
     density_estimator = inference.train()
@@ -560,13 +471,11 @@ def run_sbi_multiday(
     return posterior, x_obs_dict, x_obs_mean
 
 
-# ------------------------------------------------------------------------------
-# ANALYSIS UTILITIES
-# ------------------------------------------------------------------------------
+# -- Analysis -----------
 
 def posterior_summary(samples: Tensor, ci: float = 0.9):
     """
-    Print a table of posterior mean ± credible interval for each parameter.
+    Print a table of posterior mean credible interval for each parameter.
 
     Parameters
     ----------
@@ -576,7 +485,7 @@ def posterior_summary(samples: Tensor, ci: float = 0.9):
     lo = (1 - ci) / 2
     hi = 1 - lo
     print(f"\n{'Parameter':<18} {'Mean':>10} {'Std':>8}  {int(ci*100)}% CI")
-    print("─" * 55)
+    print("-" * 55)
     for i, name in enumerate(SBIParams.NAMES):
         col = samples[:, i].numpy()
         print(
@@ -587,7 +496,7 @@ def posterior_summary(samples: Tensor, ci: float = 0.9):
 
 def plot_posterior(samples: Tensor, prior: BoxUniform, save_path: str | None = None):
     """
-    Pair-plot of the posterior samples using sbi's built-in pairplot.
+    Plot of the posterior samples using sbi's built in pairplot.
 
     Parameters
     ----------
@@ -619,8 +528,6 @@ def run_with_params(
 ):
     """
     Run the simulator with a specific parameter vector (e.g. posterior MAP).
-
-    Returns a SimResult so you can call .summary(), .plot(), .to_csv() etc.
     """
     p  = SBIParams.from_tensor(theta)
     tt = Timetable.from_dataframe(df_raw, day)
@@ -641,10 +548,6 @@ def run_with_params(
 
 
 
-# ------------------------------------------------------------------------------
-# SAVE LEARNED PARAMETERS TO JSON
-# ------------------------------------------------------------------------------
-
 def save_learned_params(
     samples: "Tensor",
     base_sf: dict,
@@ -662,7 +565,7 @@ def save_learned_params(
 
     Returns
     -------
-    updated speed_factors dict (also written to disk)
+    updated speed_factors dict
     """
     import json, copy
     from pathlib import Path
@@ -712,10 +615,6 @@ def save_learned_params(
     return updated_sf
 
 
-# ------------------------------------------------------------------------------
-# ENTRY POINT
-# ------------------------------------------------------------------------------
-
 if __name__ == "__main__":
     import sys, pickle, os
     from pathlib import Path
@@ -760,8 +659,7 @@ if __name__ == "__main__":
     })
 
     # Load speed factors from JSON
-    import json
-    
+  
     json_path = os.path.join("simulator", "weather_factors.json")
     with open(json_path) as f:
         speed_factors = json.load(f)
@@ -816,7 +714,7 @@ if __name__ == "__main__":
 
     # Run the simulator with the calibrated parameters
     map_theta = samples.mean(dim=0)
-    print(f"\nRunning simulator with posterior-mean parameters …")
+    print(f"Running simulator with posterior-mean parameters …")
     result = run_with_params(map_theta, df_raw, day, PLANNED_SEGMENT_TIMES,
                              speed_factors=speed_factors)
     print(result.summary())

@@ -4,26 +4,19 @@ import random
 import pandas as pd
 import numpy as np
 import json
-
-# ══════════════════════════════════════════════════════════════════════════════
-# WEATHER
-# ══════════════════════════════════════════════════════════════════════════════
  
 @dataclass
 class WeatherConditions:
-    """
-    Weather inputs for the simulation.  All fields have safe defaults
-    (clear, warm, calm) so you only need to set what matters.
- 
-    Fields
-    ──────
-    temp_c        : air temperature (°C).  ≤ 0 triggers ice/frost rules.
-    wind_ms       : wind speed (m/s).  ≥ 20 triggers lakeside speed cap.
-    precip_mm     : precipitation in mm/h.  > 0 extends braking distances.
-    snow_cm       : fresh snow depth (cm).  > 5 increases switch failure risk.
+    """ 
+    Paramters
+    ------
+    temp_c : air temperature (°C).  ≤ 0 triggers ice/frost rules.
+    wind_ms : wind speed (m/s).  ≥ 20 triggers lakeside speed cap.
+    precip_mm : precipitation in mm/h.  > 0 extends braking distances.
+    snow_cm : fresh snow depth (cm).  > 5 increases switch failure risk.
     visibility_m  : visibility (m).  < 200 triggers fog speed restriction.
-    weather_type  : the type of weather (normal, snow, learned)
-    weather_factor: points to the json while where the weather factors are encoded
+    weather_type : the type of weather (normal, snow, learned)
+    weather_factor : points to the json file where the weather factors are encoded
     """
     tre200s0:  float = 15.0 # Air temp
     fkl010z1:   float = 0.0  # Gust peak
@@ -34,7 +27,7 @@ class WeatherConditions:
     param_type: str = "normal"
     speed_factors : json = None
  
-    # ── derived speed factors ─────────────────────────────────────────────────
+    # -- derived speed factors -----
  
     def speed_factor(self, segment: Segment) -> float:
 
@@ -58,9 +51,8 @@ class WeatherConditions:
                     factor = min(factor, sf[pt]["wind_moderate"])
                 # Below 25 m/s: no effect — data shows no correlation
 
-            # Precipitation — strongest signal, keep but recalibrate units
             # rre150z0 is mm/10min, convert *6 for mm/h before passing in
-            if self.rre150z0 * 6 >= 8:         # heavy (max in data ~10.8 mm/h)
+            if self.rre150z0 * 6 >= 8:   
                 factor = min(factor, sf[pt]["rain_high"])
             elif self.rre150z0 * 6 >= 3:
                 factor = min(factor, sf[pt]["rain_moderate"])
@@ -78,7 +70,6 @@ class WeatherConditions:
     def switch_failure_prob(self) -> float:
         """
         Probability that a switch failure adds extra dwell time at a station.
-        Driven by snow depth.
         """
         sf = self.speed_factors
         pt = self.param_type
@@ -92,16 +83,14 @@ class WeatherConditions:
         return 0.0
  
     def switch_failure_delay_sec(self) -> float:
-        """Extra dwell seconds if a switch failure occurs (random 60–300 s)."""
+        """Extra dwell seconds if a switch failure occurs (random 60-300 s)."""
         return random.uniform(60, 300)
  
     def travel_time(self, segment: Segment, planned_sec: int) -> float:
         """
         Compute realistic travel time for a segment given weather.
-        Returns seconds (float).
         """
         factor = self.speed_factor(segment)
-        # Travel time scales inversely with speed factor
         return planned_sec / factor
     
 
@@ -129,33 +118,14 @@ class WeatherTimeline:
 
     """
     Holds a sequence of WeatherConditions snapshots indexed by seconds-from-
-    midnight (SimPy clock units).  Call ``at(sim_time)`` from any TrainProcess
-    to get the conditions that apply at that moment.
-
-    Lookup is a simple step-function: returns the most-recent snapshot whose
-    timestamp is ≤ sim_time.  This matches how MeteoSwiss 10-minute data works
-    (each row is valid until the next row).
-    Construction
-    ────────────
-    Use the classmethod ``from_day_dataframe`` to build a timeline directly
-    from your raw dataset for a given operational day.  The DataFrame must
-    contain an ``OPERATION_PLANNED_TIMESTAMP`` (or ``time`` / ``datetime``)
-    column and the six MeteoSwiss feature columns.
-
-    Fallback
-    ────────
-    If sim_time is before the first snapshot, the first snapshot is returned.
-    If the DataFrame has no usable rows, a single clear-weather snapshot at
-    t=0 is inserted so the simulation never crashes.
+    midnight (SimPy clock units)
 
     Example
-    ───────
+    -------
         timeline = WeatherTimeline.from_day_dataframe(df_raw, day="2025-01-15")
         sim = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, weather=timeline)
         result = sim.run()
     """
-
-
 
     WEATHER_COLS = ["tre200s0", "fkl010z1", "fu3010z0",
                     "rre150z0", "htoauts0", "hto000d0"]
@@ -175,8 +145,7 @@ class WeatherTimeline:
         self.sf = speed_factors
 
     def at(self, sim_time: float) -> WeatherConditions:
-
-        """Return the WeatherConditions applicable at *sim_time* (seconds from midnight)."""
+        """Return the WeatherConditions applicable at sim_time"""
         import bisect
         idx = bisect.bisect_right(self._times, sim_time) - 1
         idx = max(0, idx)
@@ -185,8 +154,9 @@ class WeatherTimeline:
 
 
     def representative(self) -> WeatherConditions:
-
-        """Day-median conditions — useful for summary strings and single-value output."""
+        """
+        Day-median conditions
+        """
         if len(self._conds) == 1:
             return self._conds[0]
 
@@ -216,31 +186,23 @@ class WeatherTimeline:
         Build a WeatherTimeline from the raw operational DataFrame.
         Parameters
         ----------
-        df               : full raw DataFrame (all days are fine; we filter to ``day``)
-        day              : operational day string, e.g. ``"2025-01-15"``
+        df               : full raw DataFrame (all days are fine; we filter to day)
+        day              : operational day string, e.g. "2025-01-15"
         time_col         : column whose datetime values become the snapshot times.
-                           Defaults to ``OPERATION_PLANNED_TIMESTAMP``.
-                           Alternatively pass ``"time"`` if your dataset has a
-                           dedicated weather-measurement timestamp column.
         resample_minutes : if not None, resample/interpolate to this interval
                            (e.g. 10 to get one snapshot every 10 minutes).
-                           If None, one snapshot is built per unique timestamp
-                           in the filtered data (after de-duplication).
-        Returns
-        -------
-        WeatherTimeline
         """
         df = df.copy()
         df[time_col] = pd.to_datetime(df[time_col])
         
-        # Filter to the requested day
+        # Filter to the day
         day_mask = df[time_col].dt.date.astype(str) == day
         day_df   = df[day_mask].copy()
 
         if day_df.empty:
             return cls([(0.0, WeatherConditions())])
 
-        # Keep only weather columns + time; drop rows missing all weather cols
+        # Keep only weather columns + time and drop rows missing all weather cols
         weather_cols_present = [c for c in cls.WEATHER_COLS if c in day_df.columns]
         if not weather_cols_present:
             return cls(speed_factors, [(0.0, WeatherConditions(speed_factors=speed_factors))])
@@ -274,7 +236,7 @@ class WeatherTimeline:
             midnight = pd.Timestamp(day)
             day_df["_sim_time"] = (day_df[time_col] - midnight).dt.total_seconds()
         else:
-            # De-duplicate by sim_time: take the mean weather per unique timestamp
+            # Deduplicate by sim_time: take the mean weather per unique timestamp
             day_df = (
                 day_df
                 .groupby("_sim_time")[weather_cols_present]
@@ -294,5 +256,5 @@ class WeatherTimeline:
 
     @classmethod
     def from_single(cls, cond: WeatherConditions, speed_factors) -> "WeatherTimeline":
-        """Wrap a single WeatherConditions so old call-sites still work."""
+        """Wrap a single WeatherConditions"""
         return cls(speed_factors, [(0.0, cond)])

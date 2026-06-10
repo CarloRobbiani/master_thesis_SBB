@@ -45,9 +45,6 @@ class RailwaySimulator:
         sim = RailwaySimulator(tt, WeatherConditions(temp_c=-5, snow_cm=12))
         result = sim.run()
         print(result.summary())
-        result.plot()
-        result.plot_space_time()
-        result.to_csv("output.csv")
     """
  
     def __init__(
@@ -100,11 +97,11 @@ class RailwaySimulator:
                     resources[key]             = res
                     resources[(key[1], key[0])] = res   # same resource for reverse direction
  
-        # -- Shared output lists ------------------------------------------------
+        # -- Shared output lists -----------------
         sim_events:   list[SimEvent]     = []
         conflict_log: list[ConflictEvent] = []
  
-        # -- Launch one process per train ----------------------------------------
+        # -- Launch one process per train ---------------
         # Pre-compute GCN entry delays once, before launching processes
         station_priors: dict[str, float] | None = None
         if self.GCN is not None and self.df_day is not None:
@@ -147,10 +144,7 @@ class RailwaySimulator:
     
 
 
-# ------------------------------------------------------------------------------
-# CONVENIENCE: SENSITIVITY SWEEP
-# ------------------------------------------------------------------------------
- 
+
 def weather_sensitivity(
     timetable: Timetable,
     param:     str = "fu3010z0",
@@ -261,10 +255,7 @@ def run_ablation(
 
  
 
- 
-# ------------------------------------------------------------------------------
-# ENTRY POINT — demo when run directly
-# ------------------------------------------------------------------------------
+
  
 if __name__ == "__main__":
     import sys
@@ -334,7 +325,7 @@ if __name__ == "__main__":
     weather_timeline = WeatherTimeline(speed_factors=speed_factors, snapshots=None).from_day_dataframe(df_raw, day, speed_factors)
     print(f"Weather: {weather_timeline}")
 
-    # -- Run 1: real time-varying weather from dataset -------------------------
+    # -- Run 1: real time-varying weather from dataset ------
     print("-- Run 1: real weather timeline --")
     """ # Take the mean weather from that day
     weather_row = day_rows[["tre200s0", "fkl010z1", "fu3010z0", 
@@ -346,7 +337,7 @@ if __name__ == "__main__":
     r1.to_csv("simulator/data/normal_weather.csv")
     #print(r1.summary())
  
-    # -- Run 2: winter storm (static, for comparison) --------------------------
+    # -- Run 2: winter storm (static, for comparison) -------
     print("-- Run 2: winter storm --")
     storm = WeatherConditions(tre200s0=-4, fu3010z0=22, rre150z0=8, htoauts0=10, speed_factors=speed_factors)
     sim2  = RailwaySimulator(PLANNED_SEGMENT_TIMES, tt, storm, seed=42)
@@ -378,7 +369,7 @@ if __name__ == "__main__":
     r4.to_csv("simulator/data/sim_with_GCN.csv")
     #print(r4.summary())
 
-    # -- Run 5: use learned SBI params --------------------
+    # -- Run 5: use learned SBI params -------------
 
     """ #days = df_raw.iloc[:int(len(df_raw) *0.3)]
     days_unique = available[:int(len(available))]

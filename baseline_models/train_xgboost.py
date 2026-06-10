@@ -15,10 +15,10 @@ import matplotlib.pyplot as plt
 df_real = pd.read_parquet("data/train_data_augmented.parquet")
 df_real = df_real.sort_values("OPERATION_PLANNED_TIMESTAMP")
 
-df = pd.read_parquet("simulator\data_scenarios\synthetic_freezing_rain.parquet")
-
+df = pd.read_parquet("simulator\data_scenarios\synthetic_mild_snow.parquet")
 df = df.sort_values("OPERATION_PLANNED_TIMESTAMP")
 
+# -- Add temporal Encodings ---
 df["hour_sin"] = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 24)
 df["hour_cos"] = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 24)
 df["dow_sin"] = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
@@ -78,7 +78,7 @@ for mask in mask_list:
     error = np.abs(pred_mask[:,0] - true_mask).mean()
     print(f"error: {error}; sample size {len(true_mask)}")
 
-
+# Scatter plot
 axes[0].scatter(true_series, pred_series, alpha=0.5, s=20, color="steelblue", label="Predictions")
 
 # Add diagonal line (perfect prediction)
@@ -103,11 +103,11 @@ axes[1].set_title("Prediction Error Distribution")
 axes[1].legend()
 
 plt.tight_layout()
-plt.savefig("images/Xgboost_aug_freezing_rain.png")
+plt.savefig("images/Xgboost_aug_mild_snow.png")
 plt.show()
 
 
-# --- Hourly delay and error analysis ---
+# -- Hourly delay and error analysis ---
 test_df = df.iloc[val_end:].copy()
 test_df["predicted"] = prediction[:, 0]
 test_df["actual"] = y_test.values
@@ -145,8 +145,7 @@ plt.tight_layout()
 plt.savefig("images/hourly_delay_analysis.png")
 plt.show()
 
-# ---- per-station metrics -----
-
+# ---- per-station metrics ---
 per_station = test_df.groupby("OPERATING_POINT_ABBREVIATION").agg(
     avg_actual=("actual", "mean"),
     avg_predicted=("predicted", "mean"),

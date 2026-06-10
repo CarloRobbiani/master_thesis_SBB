@@ -17,13 +17,12 @@ from utils import (
 )
 from delay_dataset import DelayDataset
 
-# ----------------------------------------------
-# 0.  CONFIGURATION
-# ----------------------------------------------
+
+# -- Configuration ----------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 #DATA_PATH = os.path.join("data", "train_data_weather.parquet")
 #DATA_PATH = os.path.join("simulator", "data", "sim_training.parquet")
-DATA_PATH = os.path.join("data", "train_data_augmented.parquet")
+DATA_PATH = os.path.join("data", "train_data_augmented.parquet") # The data to train on
 
 STATION_FEATURE_COLS = [
     "EVENT_TYPE",
@@ -55,10 +54,8 @@ TRAIN_RATIO = 0.7
 DEVICE      = device
 
 
-# ----------------------------------------------
-# 1.  TRAIN / EVAL LOOPS
-# ----------------------------------------------
 
+# -- Train / Eval loops -------
 def train_epoch(model, loader, optimizer, criterion, laplacian, device):
     model.train()
     total_loss = 0.0
@@ -80,8 +77,8 @@ def evaluate(model, loader, criterion, laplacian, device,
              tg_min, target_scaler):
     """
     Returns (avg_loss_in_normalised_space, MAE_seconds, RMSE_seconds).
-    Loss is in normalised log-space (what we optimise).
-    MAE/RMSE are in seconds (what we report).
+    Loss is in normalised log-space 
+    MAE/RMSE are in seconds
     """
     model.eval()
     total_loss = 0.0
@@ -98,12 +95,12 @@ def evaluate(model, loader, criterion, laplacian, device,
     preds = np.concatenate(all_pred) # (total, N, 2)
     trues = np.concatenate(all_true)
 
-    # Invert target normalisation → log space
+    # Invert target normalisation to log space
     sh    = preds.shape
     preds = target_scaler.inverse_transform(preds.reshape(-1, 2)).reshape(sh)
     trues = target_scaler.inverse_transform(trues.reshape(-1, 2)).reshape(sh)
 
-    # Invert log transform → seconds
+    # Invert log transform to seconds
     preds_sec = np.expm1(preds) + tg_min
     trues_sec = np.expm1(trues) + tg_min
 
@@ -111,10 +108,6 @@ def evaluate(model, loader, criterion, laplacian, device,
     rmse = float(np.sqrt(((preds_sec - trues_sec) ** 2).mean()))
     return avg_loss, mae, rmse
 
-
-# ----------------------------------------------
-# 2.  MAIN
-# ----------------------------------------------
 
 def main():
     print(f"Device: {DEVICE}\n")
@@ -129,7 +122,7 @@ def main():
     F = F_raw + 2  # +2 lagged dep/arr channels added by DelayDataset
     E = external_arr.shape[-1]
 
-    # -- temporal split ------------------------------------------------
+    # -- temporal split ---------
     t_train = int(T * TRAIN_RATIO)
     t_val = int(T * (TRAIN_RATIO + (1 - TRAIN_RATIO) / 2))
 
@@ -137,14 +130,15 @@ def main():
     va_st = station_arr[t_train:t_val]; va_ex = external_arr[t_train:t_val]; va_tg = target_arr[t_train:t_val]
     te_st = station_arr[t_val:]; te_ex = external_arr[t_val:]; te_tg = target_arr[t_val:]
 
-    print(f"\nSplit sizes → train: {len(tr_st)}, val: {len(va_st)}, test: {len(te_st)}")
+    print(f"\nSplit sizes train: {len(tr_st)}, val: {len(va_st)}, test: {len(te_st)}")
 
-    # -- normalise station features ------------------------------------
+    # -- normalise station features -------
     tr_st, va_st, te_st, feat_scaler = normalize(tr_st, va_st, te_st)
 
-    # -- log1p-transform targets ---------------------------------------
+    # -- log1p-transform targets ---------
     tg_min = float(tr_tg.min())
 
+    # Use same stats as in training
     os.makedirs("data", exist_ok=True)
     with open("data/train_stats.json", "w") as f:
         json.dump({"tg_min": tg_min}, f)
@@ -161,13 +155,13 @@ def main():
     va_tg = to_log(va_tg)
     te_tg = to_log(te_tg)
 
-    # -- normalise targets (z-score in log space) ----------------------
+    # -- normalise targets (z-score in log space) --------
     tr_tg, va_tg, te_tg, target_scaler = normalize_targets(tr_tg, va_tg, te_tg)
 
     with open("data/target_scaler.pkl", "wb") as f:
         pickle.dump(target_scaler, f)
 
-    # -- datasets & loaders -------------------------------------------
+    # -- datasets and loaders ----------
     train_ds = DelayDataset(tr_st, tr_ex, tr_tg, SEQ_LEN, HORIZON)
     val_ds   = DelayDataset(va_st, va_ex, va_tg, SEQ_LEN, HORIZON)
     test_ds  = DelayDataset(te_st, te_ex, te_tg, SEQ_LEN, HORIZON)
@@ -176,11 +170,11 @@ def main():
     val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
     test_loader  = DataLoader(test_ds,  batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
-    # -- graph Laplacian -----------------------------------------------
+    # -- graph Laplacian ----------
     station_list_path = os.path.join("data", "station_list.csv")
     laplacian = prepare_laplacian(station_list_path, device)
 
-    # -- model ---------------------------------------------------------
+    # -- model -------------------
     model = StationMATGCN(
         num_station_features  = F,
         num_external_features = E,
@@ -198,7 +192,7 @@ def main():
     )
     criterion = nn.HuberLoss(delta=2.0)
 
-    # -- training loop -------------------------------------------------
+    # -- training loop ----------
     best_val_loss = math.inf
     print(f"\n{'Epoch':>5}  {'Train Loss':>12}  {'Val Loss':>10}  "
           f"{'Val MAE(s)':>11}  {'Val RMSE(s)':>12}  {'LR':>10}")
@@ -222,7 +216,7 @@ def main():
         print(f"{epoch:>5}  {train_loss:>12.4f}  {val_loss:>10.4f}  "
               f"{val_mae:>11.1f}  {val_rmse:>12.1f}  {current_lr:>10.2e}")
 
-    # -- test evaluation -----------------------------------------------
+    # -- test evaluation -------
     model.load_state_dict(torch.load("best_matgcn.pt", map_location=DEVICE))
     _, test_mae, test_rmse = evaluate(
         model, test_loader, criterion, laplacian, DEVICE,

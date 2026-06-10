@@ -40,7 +40,7 @@ BATCH_SIZE  = 32
 TRAIN_RATIO = 0.7
 DEVICE      = device
 
-# -- load & split ----------------------------------------------
+# -- load and split -------
 print("Loading data …")
 station_arr, external_arr, target_arr, stations = load_and_pivot(
     DATA_PATH, STATION_FEATURE_COLS, EXTERNAL_COLS
@@ -53,14 +53,15 @@ E = external_arr.shape[-1]
 t_train = int(T * TRAIN_RATIO)
 t_val   = int(T * (TRAIN_RATIO + (1 - TRAIN_RATIO) / 2))
 
+# Split into train, val and test sets
 tr_st = station_arr[:t_train]; tr_tg = target_arr[:t_train]
 va_st = station_arr[t_train:t_val]; va_tg = target_arr[t_train:t_val]
 te_st = station_arr[t_val:]; te_ex = external_arr[t_val:]; te_tg = target_arr[t_val:]
 
-# -- normalize station features ------------------
+# -- normalize station features ---------
 tr_st, va_st, te_st, _ = normalize(tr_st, va_st, te_st)
 
-# -- log1p target transform ---------------------------
+# -- log1p target transform using stats from training ----
 import json
 with open("data/train_stats.json") as f:
     tg_min = json.load(f)["tg_min"]
@@ -86,19 +87,19 @@ def invert_targets(arr_norm):
 
 
 
-# ── normalise targets (z-score in log space) ──────────────────────
+# -- normalise targets ------
 tr_tg, va_tg, te_tg, target_scaler = normalize_targets(tr_tg, va_tg, te_tg)
 
 T_te, N_te, C = te_tg_log.shape
 te_tg_scaled = target_scaler.transform(te_tg_log.reshape(-1, C)).reshape(T_te, N_te, C)
 
 
-# -- dataset / loader ------------------------------------------
-# DelayDataset now concatenates lagged targets internally → x is (T, N, F+2)
+# -- dataset / loader -------------
+# DelayDataset now concatenates lagged targets internally; x is (T, N, F+2)
 test_ds     = DelayDataset(te_st, te_ex, te_tg_scaled, SEQ_LEN, HORIZON)
 test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
-# -- model ---------------------------------------------------
+# -- prepare model -----
 model = StationMATGCN(
     num_station_features  = F + 2, #  F+2 because DelayDataset appends 2 lagged target channels
     num_external_features = E,
@@ -139,14 +140,14 @@ def eval_model(model, loader, laplacian):
     trues_sec = from_log(trues_log)
 
 
-    # CHANGED: report metrics per channel (ch0=departure, ch1=arrival)
+    # report metrics per channel (ch0=departure, ch1=arrival)
     for ch, name in enumerate(["Departure", "Arrival"]):
         mae  = float(np.abs(preds_sec[..., ch] - trues_sec[..., ch]).mean())
         rmse = float(np.sqrt(((preds_sec[..., ch] - trues_sec[..., ch]) ** 2).mean()))
         print(f"\n{name}  MAE : {mae:.1f} sec")
         print(f"{name} RMSE : {rmse:.1f} sec")
 
-    # Feature attention weights (unchanged logic, updated feature names)
+    # Feature attention weights
     weights = []
     for batch in all_weights:
         for block_w in batch:
@@ -154,7 +155,6 @@ def eval_model(model, loader, laplacian):
     weights = torch.cat(weights, dim=0)
     feat_importance = weights.mean(dim=(0, 1, 2))
 
-    # lagged_dep and lagged_arr replace old target_arr input
     feature_names = STATION_FEATURE_COLS + ["lagged_dep", "lagged_arr"] + EXTERNAL_COLS
     for name, score in zip(feature_names, feat_importance):
         print(f"{name}: {score:.4f}")
@@ -169,9 +169,7 @@ preds, trues, mae = eval_model(model, test_loader, laplacian)
 station_feature_names  = STATION_FEATURE_COLS #+ ["lagged_dep", "lagged_arr"]
 external_feature_names = EXTERNAL_COLS
 
-# permutation_importance calls compute_mae_seconds internally;
-# that function uses pred.mean(dim=-1) which collapses the horizon dim.
-# compute_mae_seconds in utils.py needs updating too
+# permutation_importance calls compute_mae_seconds 
 """ importances = permutation_importance(
     model,
     test_loader,
@@ -188,7 +186,7 @@ for k, v in sorted(importances.items(), key=lambda x: -x[1]):
     print(f"  {k:45s}  {v:+.2f} s") """
 
 
-# -- plotting ------------------------------------------------------------------
+# -- plotting -----
 # preds/trues are (num_samples, N, 2). Plot each channel separately.
 STATION_IDX = None
 WINDOW      = None
@@ -256,12 +254,10 @@ plt.tight_layout()
 plt.savefig("images/eval_plot_scatter.png", dpi=150)
 plt.show()
 
-# -- hourly analysis ---------------------------------------
+# -- hourly analysis ------
 raw_df = pd.read_parquet(DATA_PATH)
 raw_df = raw_df.sort_values("OPERATION_PLANNED_TIMESTAMP")
-""" timestamps = raw_df["OPERATION_PLANNED_TIMESTAMP"].iloc[
-    t_val + SEQ_LEN : t_val + SEQ_LEN + len(preds)
-].reset_index(drop=True) """
+
 
 pivoted_timestamps = raw_df["OPERATION_PLANNED_TIMESTAMP"].sort_values().unique()
 timestamps = pd.Series(pivoted_timestamps[t_val + SEQ_LEN : t_val + SEQ_LEN + len(preds)])

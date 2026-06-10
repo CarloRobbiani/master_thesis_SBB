@@ -6,7 +6,7 @@ def connect_weather_stations(weather_file = None, connectionfile=None, train_fil
     Merges based on nearest match of timestamp
     Returns: .parquet file with all data
     """
-    json_weather = pd.read_json("graph_models\weather_connection.json")
+    json_weather = pd.read_json("graph_models\weather_connection.json") # Load the file with information on how to connect
 
     neu_weather = prepare_neuchatel()
     neu_weather = neu_weather.sort_values("reference_timestamp")
@@ -24,7 +24,7 @@ def connect_weather_stations(weather_file = None, connectionfile=None, train_fil
     train_df = train_df.dropna()
     
 
-    # split datasets
+    # split datasets based on stations
     train_df_ne = train_df[train_df["OPERATING_POINT_ABBREVIATION"].isin(json_weather["Neuchatel"])]
     train_df_gre = train_df[train_df["OPERATING_POINT_ABBREVIATION"].isin(json_weather["Grenchen"])]
 
@@ -52,7 +52,7 @@ def connect_weather_stations(weather_file = None, connectionfile=None, train_fil
 
 def prepare_neuchatel():
 
-    # read in data
+    # Read in data
     df = pd.read_csv("data\weather/neu_pre_temp_wind_sun.csv", delimiter=";", header=0)
 
     cols_to_keep = ["station_abbr", "reference_timestamp", "date", "tre200s0", "fkl010z1", "fu3010z0", "rre150z0"]
@@ -69,7 +69,7 @@ def prepare_neuchatel():
     # Merge with snow data
     neu_snow = pd.read_csv("data\weather/neu_snow.csv", delimiter=";", header=0)
 
-    cols_to_keep = ["station_abbr", "date", "reference_timestamp", "hto000d0"] # hto000d0 Schneehöhe um 6 UTC
+    cols_to_keep = ["station_abbr", "date", "reference_timestamp", "hto000d0"] # hto000d0 snow height at 6am UTC
 
     neu_snow['reference_timestamp'] = pd.to_datetime(neu_snow['reference_timestamp'], format="%d.%m.%Y %H:%M")
     neu_snow['date'] = neu_snow['reference_timestamp']

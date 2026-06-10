@@ -1,3 +1,7 @@
+"""
+Evaluate the Simulated delay compared to real / simulated delay
+"""
+
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
@@ -8,12 +12,11 @@ BASELINE_NAME = "normal_weather.csv"
 df_sim = pd.read_csv(f"simulator\data\{FILE_NAME}.csv")
 #df_sim = pd.read_csv("simulator/data/normal_weather.csv")
 df_sim["OPERATION_PLANNED_TIMESTAMP"] = pd.to_datetime(df_sim["OPERATION_PLANNED_TIMESTAMP"], format="%Y-%m-%d %H:%M:%S", utc=True)
-#df_sim = df_sim[df_sim["SIMULATED_DELAY"] < 5000]
 df_sim = df_sim.sort_values(by="OPERATION_PLANNED_TIMESTAMP")
 print(df_sim.shape)
 
 
-# ── Load baseline (no injection) for comparison ───────────────────────────────
+# -- Load baseline (no injection) for comparison -------
 df_base = pd.read_csv(f"simulator/data/{BASELINE_NAME}")
 df_base["OPERATION_PLANNED_TIMESTAMP"] = pd.to_datetime(
     df_base["OPERATION_PLANNED_TIMESTAMP"], format="%Y-%m-%d %H:%M:%S", utc=True

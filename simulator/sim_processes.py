@@ -13,26 +13,10 @@ import os
 SIGMA_TRAVEL: float = 0.05 
 SIGMA_DWELL:  float = 5.0 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SIMPY PROCESSES
-# ══════════════════════════════════════════════════════════════════════════════
  
 class TrainProcess:
     """
     SimPy process representing one train running along its planned route.
- 
-    Delay propagation logic
-    ───────────────────────
-    1.  The train starts with any initial delay present at its first departure.
-    2.  For each segment it traverses:
-          a. Request the segment resource (single-track: capacity=1; double: capacity=∞)
-          b. Travel time = planned_time / weather_speed_factor
-          c. Extra time = travel_time - planned_time  -> logged as weather delay
-    3.  At each station:
-          a. Check for switch failure (probabilistic, driven by snow)
-          b. Enforce minimum dwell
-          c. Record arrival and departure SimEvents
-    4.  Delay = (simulated_departure_time - planned_departure_time)
     """
  
     def __init__(
@@ -46,9 +30,9 @@ class TrainProcess:
         conflict_log: list[ConflictEvent],
         day_start:   datetime,
         param_type : str, # Type of parameter to be loaded, either normal or learned
-        inject_delay : Optional[tuple] = None, # Optionally give tuple (a,b, c) where a is the station where you want 
-                                       # to inject delay, b is a line, train_number or None and 
-                                       # c is amount of delay in seconds
+        inject_delay : Optional[tuple] = None,  # Optionally give tuple (a,b, c) where a is the station where you want 
+                                                # to inject delay, b is a line, train_number or None and 
+                                                # c is amount of delay in seconds
         entry_delays_sec = None
     ):
         self.env          = env
@@ -70,7 +54,7 @@ class TrainProcess:
         self.station_priors = entry_delays_sec
 
         
-
+        # Load weather factors
         with open(os.path.join("simulator", "weather_factors.json")) as f:
             self.speed_factors = json.load(f)
  
@@ -87,8 +71,6 @@ class TrainProcess:
         stops    = schedule.stops
 
  
-        # Group stops into station visits: list of (arrival_stop, departure_stop)
-        # Some stations only have departure (origin) or only arrival (terminus)
         visits = self._group_visits(stops)
  
         prev_station = None
@@ -96,7 +78,7 @@ class TrainProcess:
         for arr_stop, dep_stop in visits:
             station_abbr = (arr_stop or dep_stop).station
  
-            # ── 1. TRAVEL to this station ──────────────────────────────────────
+            # -- Travel to this station ------
             if prev_station is not None:
                 seg_key  = (prev_station, station_abbr)
                 segment  = SEGMENTS.get(seg_key)
@@ -124,14 +106,12 @@ class TrainProcess:
                     f"env.now={self.env.now:.0f} "
                     f"arr_planned={(self._ts_to_sim(arr_stop.planned_ts) if arr_stop else 'n/a')}") """
  
-                # Weather-adjusted travel time — resolve conditions at the
-                # moment the train departs this segment (env.now after any
-                # headway wait), so rapidly-changing weather is captured.
+
                 current_weather = self.weather.at(self.env.now)
                 weather_travel = current_weather.travel_time(segment, planned_travel)
                 weather_extra  = weather_travel - planned_travel
  
-                # ── 2. ACQUIRE segment resource (blocks on single track) ────────
+                # -- Acquire segment resource (blocks on single track) --------
                 resource   = self.resources.get(seg_key)
                 blocked_by = None
                 wait_start = self.env.now
@@ -151,16 +131,16 @@ class TrainProcess:
                         ))
                         #self.current_delay += waited
  
-                # ── 3. TRAVEL ──────────────────────────────────────────────────
+                # -- Travel -----------------
                 travel_causes = []
                 if weather_extra > 1:
                     travel_causes.append(
                         f"weather(+{weather_extra:.0f}s on {seg_key[0]}→{seg_key[1]})"
                     )
 
-                # add noise
+                # Add noise
                 travel_factor = self.speed_factors[self.param_type]["sigma_travel"]
-                travel_noise = random.gauss(0, weather_travel * travel_factor)  # 5% std
+                travel_noise = random.gauss(0, weather_travel * travel_factor) 
                 yield self.env.timeout(weather_travel + travel_noise)
  
                 # Release segment
@@ -169,20 +149,13 @@ class TrainProcess:
  
                 #self.current_delay += weather_extra
  
-            # ── 4. ARRIVAL ────────────────────────────────────────────────────
+            # -- Arrival --------------------------------------
             if arr_stop is not None:
                 arr_planned_sim = self._ts_to_sim(arr_stop.planned_ts)
-                #arr_planned_sim = self._ts_to_sim(arr_stop.actual_ts)
 
                 # If this is the very first event and no travel has happened yet,
                 # the train is arriving from outside the corridor. Wait until the
-                # planned arrival time before recording it.
-
-                # TODO ask where to put
-                """ first_dep = next((s for s in stops if s.event_type == "departure"), None)
-                if first_dep and not np.isnan(first_dep.actual_delay):
-                    self.current_delay = first_dep.actual_delay  # seed from ground truth """
-
+                # planned arrival time before recording it
                 if prev_station is None:
                     wait = max(0, arr_planned_sim - self.env.now)
                     yield self.env.timeout(wait)
@@ -217,12 +190,12 @@ class TrainProcess:
                     blocked_by      = None,
                 ))
  
-            # ── 5. DWELL ──────────────────────────────────────────────────────
+            # -- Dwell ---------------------
             if arr_stop is not None and dep_stop is not None:
                 dep_planned_sim = self._ts_to_sim(dep_stop.planned_ts)
                 
                 if dep_stop.stop_type == "pass":
-                    # Pass stops: no dwell, no noise — depart immediately
+                    # Pass stops: no dwell, no noise and depart immediately
                     pass
                 else:
                     # Commercial stops: wait until planned departure + small boarding noise
@@ -240,22 +213,19 @@ class TrainProcess:
                 wait = max(0, dep_planned_sim - self.env.now)
                 yield self.env.timeout(wait)
 
-                # Seed with GCN prediction
+                # Seed with GCN prediction if enabled
                 if self.station_priors is not None:
                     entry_station = dep_stop.station
                     prior_mean = self.station_priors.get(entry_station, 0.0)
                     # Sample around the station-level prior.
-                    # std is calibrated to typical per-train spread (~30s);
-                    # negative samples are clipped — we don't start trains early.
+                    # negative samples are clipped such that trains cannot start early
                     prior_std  = 30.0
                     entry_delay = max(0.0, random.gauss(prior_mean, prior_std))
                     #print(f"Entry Delay: {entry_delay}")
                     self.current_delay = entry_delay
                     yield self.env.timeout(entry_delay)
 
-
-
-                # Seed with the real initial delay if available
+                # Seed with the real initial delay
                 elif not math.isnan(dep_stop.actual_delay):
                     self.current_delay = dep_stop.actual_delay
                     yield self.env.timeout(max(0, dep_stop.actual_delay))
@@ -266,7 +236,7 @@ class TrainProcess:
                 yield self.env.timeout(wait) """
             
             
-            # ── 6. SWITCH FAILURE ─────────────────────────────────────────────
+            # -- Switch failure --------------
             switch_causes = []
             if dep_stop is not None:
                 station = STATIONS.get(station_abbr)
@@ -277,23 +247,24 @@ class TrainProcess:
                     yield self.env.timeout(extra)
                     switch_causes.append(f"switch_failure(+{extra:.0f}s,snow={current_weather.htoauts0}cm)")
  
-            # ── 7. DEPARTURE ──────────────────────────────────────────────────
+            # -- Departure ---------------------
             if dep_stop is not None:
                 causes = switch_causes.copy()
                 dep_planned_sim = self._ts_to_sim(dep_stop.planned_ts)
 
-                if self.inject_delay is not None and str(self.inject_delay[0]) == str(station_abbr):
-                    if self.inject_delay[1] is None:
+                # Inject Delay if it is not None
+                if self.inject_delay is not None and str(self.inject_delay[0]) == str(station_abbr): # Only inject at this station
+                    if self.inject_delay[1] is None: # Inject every train that departures the station
                         yield self.env.timeout(self.inject_delay[2])
                         causes.append(f"injected {self.inject_delay[2]}s at station {self.inject_delay[0]}")
-                    elif str(self.inject_delay[1]) == str(schedule.train_number):
+                    elif str(self.inject_delay[1]) == str(schedule.train_number): # Only inject trains with this train number
                         yield self.env.timeout(self.inject_delay[2])
                         causes.append(f"injected {self.inject_delay[2]}s at train {self.inject_delay[1]}")
-                    elif str(self.inject_delay[1]) == str(schedule.line):
+                    elif str(self.inject_delay[1]) == str(schedule.line): # Only inject trains on this schedule
                         yield self.env.timeout(self.inject_delay[2])
                         causes.append(f"injected {self.inject_delay[2]}s on line {self.inject_delay[1]}")
 
-                dep_actual_sim = self.env.now   # now reflects the injected wait
+                dep_actual_sim = self.env.now  
                 dep_delay      = dep_actual_sim - dep_planned_sim
                 self.current_delay = dep_delay
                
@@ -328,12 +299,6 @@ class TrainProcess:
         """
         Pair arrival and departure stops at the same station into visit tuples.
         Returns list of (arrival_or_None, departure_or_None).
- 
-        Handles multiple visits to the same station (e.g. terminus reversal,
-        layover, or duplicate data rows) by treating each consecutive
-        arrival/departure pair as a separate visit, in chronological order.
-        The old dict-based approach silently overwrote earlier stops when a
-        station appeared more than once, causing massive phantom dwell waits.
         """
         # Sort by sequence number so order is guaranteed
         sorted_stops = sorted(stops, key=lambda s: (s.sequence, s.event_type))
@@ -386,7 +351,5 @@ class TrainProcess:
         return total
  
     def _find_occupant(self, seg_key: tuple[str, str]) -> Optional[int]:
-        """Return the train number currently in the segment (best-effort)."""
-        # Without a shared occupancy registry this is approximate;
-        # the conflict log still records the wait time accurately.
+        """Return the train number currently in the segment (not implemented)."""
         return None

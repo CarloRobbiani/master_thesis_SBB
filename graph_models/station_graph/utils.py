@@ -16,7 +16,7 @@ from sklearn.preprocessing import StandardScaler
 class ChebGraphConv(nn.Module):
     def __init__(self, in_channels, out_channels, K):
         super().__init__()
-        self.K = K
+        self.K = K # Number of hops to make
         self.linear = nn.Linear(in_channels * K, out_channels)
 
     def forward(self, x, laplacian):
@@ -258,6 +258,7 @@ def load_and_pivot(path: str, STATION_FEATURE_COLS, EXTERNAL_COLS, sim = False):
           f"external: {np.isnan(external_arr).sum()}, "
           f"target: {np.isnan(target_arr).sum()}")
 
+    # Forward filling
     for e in range(E):
         s = pd.Series(external_arr[:, e])
         external_arr[:, e] = s.ffill().fillna(0).values
@@ -280,7 +281,7 @@ def load_and_pivot(path: str, STATION_FEATURE_COLS, EXTERNAL_COLS, sim = False):
 
 
 def normalize(train_arr, val_arr, test_arr):
-    """Fit StandardScaler on train, apply to all splits. Works on (T, N, F) arrays."""
+    # Fit StandardScaler on train, apply to all splits
     T_tr, N, F = train_arr.shape
     scaler      = StandardScaler()
     scaler.fit(train_arr.reshape(-1, F))
@@ -295,16 +296,9 @@ def normalize(train_arr, val_arr, test_arr):
 def normalize_targets(tr_tg, va_tg, te_tg):
     """
     Fit a StandardScaler on the log-transformed training targets (T, N, 2)
-    and return normalised splits plus the scaler for inversion at eval time.
-
-    Why a separate scaler?  The station-feature scaler operates on (T*N, F)
-    and should not absorb target variance.  Normalising the targets puts the
-    two lagged-target channels (appended by DelayDataset) on the same scale
-    as every other z-scored feature, making permutation importance fair.
-
-    Call AFTER log-transforming the targets (to_log).
+    Returns normalised splits plus the scaler for inversion at eval time
     """
-    T, N, C = tr_tg.shape        # C == 2  (dep, arr)
+    T, N, C = tr_tg.shape        # C = 2  (dep, arr)
     scaler   = StandardScaler()
     scaler.fit(tr_tg.reshape(-1, C))
 
@@ -315,9 +309,8 @@ def normalize_targets(tr_tg, va_tg, te_tg):
     return _t(tr_tg), _t(va_tg), _t(te_tg), scaler
 
 
-# ------------------------------------------------------------------------------
-# Permutation importance
-# ------------------------------------------------------------------------------
+
+# -- Permutation importance ----------
 
 def _collect_all_batches(loader):
     """Materialise the full DataLoader into a single tensor triple (x, ext, y)."""
@@ -328,14 +321,7 @@ def _collect_all_batches(loader):
 
 
 def permute_station_feature(x_all, feature_idx):
-    """
-    Globally permute one feature channel across ALL samples in the dataset.
-
-    This is the critical fix for lagged-target channels: consecutive sliding
-    windows share almost identical lag values, so shuffling within a 32-sample
-    batch causes near-zero perturbation and makes the feature look unimportant.
-    A global shuffle across all T windows produces a meaningful signal.
-    """
+    # Globally permute one feature channel across all samples in the dataset.
     x_perm = x_all.clone()
     perm = torch.randperm(x_all.size(0))
     x_perm[..., feature_idx] = x_all[perm, ..., feature_idx]
@@ -354,13 +340,6 @@ def compute_mae_seconds(model, x_all, ext_all, y_all, laplacian, tg_min,
     """
     Run inference over the full dataset in mini-batches and return MAE in seconds.
 
-    Parameters
-    ----------
-    x_all, ext_all, y_all : full-dataset CPU tensors
-    laplacian             : Laplacian (CPU)
-    tg_min                : scalar shift used in to_log()
-    target_scaler         : StandardScaler fitted on log targets, or None
-    batch_size            : inference chunk size (tune to fit RAM/VRAM)
     """
     model.eval()
     all_pred, all_true = [], []
@@ -404,19 +383,14 @@ def permutation_importance(
 
     Parameters
     ----------
-    station_feature_names : the ORIGINAL F feature names (no lagged channels).
-                            The two lagged channels appended by DelayDataset sit
-                            at indices F and F+1 and are always reported as
-                            'lagged_dep' / 'lagged_arr'.
-    n_repeats             : number of independent permutations to average.
-                            3 is usually enough; increase for noisier datasets.
-    target_scaler         : pass the scaler returned by normalize_targets() if
-                            you z-scored the targets after log-transform.
+    station_feature_names : the original F feature names (no lagged channels)
+    n_repeats             : number of independent permutations to average
+    target_scaler         : the scaler returned by normalize_targets()
     """
     model.eval()
     laplacian = laplacian.cpu()
 
-    # Materialise the full split once — avoids the per-batch permutation trap
+    # Load the full split once
     x_all, ext_all, y_all = _collect_all_batches(loader)
 
     lagged_names   = ["lagged_dep", "lagged_arr"]

@@ -25,8 +25,6 @@ SEQ_LEN = 28
 class GCNPredictor:
     """
     Wraps a trained StationMATGCN for inference inside the simulator.
-    Call predict_entry_delays() once before RailwaySimulator.run() to get
-    a {train_number: delay_sec} dict that seeds each TrainProcess.
     """
 
     def __init__(
@@ -68,12 +66,11 @@ class GCNPredictor:
     def _build_history_buffer(self, df_day: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         """
         Build the (SEQ_LEN, N, F) station buffer and (E,) external snapshot
-        from the last SEQ_LEN timesteps of the day's raw data — exactly
-        replicating the load_and_pivot logic from training.
+        from the last SEQ_LEN timesteps of the day's raw data
         """
         import tempfile, os
 
-        # load_and_pivot expects a file path; write a temp parquet
+        # load_and_pivot expects a file path write a temp parquet
         with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as f:
             tmp = f.name
         try:
@@ -87,12 +84,12 @@ class GCNPredictor:
         # Normalize station features with the training scaler
         T, N, F_orig = station_arr.shape 
 
-        # Normalize only the original station features (what the scaler was fitted on)
+        # Normalize only the original station features
         station_arr_norm = self.scaler.transform(
             station_arr.reshape(-1, F_orig)
         ).reshape(T, N, F_orig)
 
-        # Append lagged targets AFTER scaling (they weren't included in scaler fit)
+        # Append lagged targets after scaling 
         lagged_targets = np.zeros((T, N, 2), dtype=np.float32)
         if T > 1:
             lagged_raw = target_arr[:-1]  # (T-1, N, 2)
@@ -123,7 +120,6 @@ class GCNPredictor:
         """
         Run one forward pass. Returns predicted delays in seconds,
         shape (N, 2): col 0 = departure delay, col 1 = arrival delay.
-        Station order matches self.station_order
         """
         hist, ext = self._build_history_buffer(df_day)
 
@@ -144,13 +140,8 @@ class GCNPredictor:
         df_day: pd.DataFrame,
     ) -> dict[str, float]:
         """
-        Returns {station_abbr: predicted_departure_delay_sec} for every
-        station in LINE_ORDER.
-        This is a station-level prior: one value per terminus (BI, NE)
-        representing the expected delay climate for trains departing from
-        that station on this day.  Individual trains sample around this
-        prior inside TrainProcess """
-
+        Returns {station_abbr: predicted_departure_delay_sec} for every station in LINE_ORDER.
+        """
         pred_sec = self.predict_all_stations(df_day)   # (N, horizon, 2)
         station_to_idx = {s: i for i, s in enumerate(self.station_order)}
         priors: dict[str, float] = {}

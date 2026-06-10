@@ -5,10 +5,7 @@ import pandas as pd
 from sim_topology import LINE_ORDER
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TIMETABLE
-# ══════════════════════════════════════════════════════════════════════════════
- 
+
 @dataclass
 class StopEntry:
     """One planned stop from the historical data."""
@@ -48,8 +45,7 @@ class TrainSchedule:
  
 class Timetable:
     """
-    Container for all train schedules on one operational day,
-    loaded from the parquet/CSV produced by the data pipeline.
+    Container for all train schedules on one operational day
     """
  
     def __init__(self, schedules: list[TrainSchedule], day: str):
@@ -70,8 +66,8 @@ class Timetable:
     def _build(cls, df: pd.DataFrame, day: str) -> "Timetable":
         df = df.copy()
         df["OPERATION_PLANNED_TIMESTAMP"] = pd.to_datetime(df["OPERATION_PLANNED_TIMESTAMP"])
-        df["OPERATION_ACTUAL_TIMESTAMP"]  = pd.to_datetime(df["OPERATION_ACTUAL_TIMESTAMP"])
-        df["OPERATIONAL_DAY"]             = pd.to_datetime(df["OPERATIONAL_DAY"]).dt.date.astype(str)
+        df["OPERATION_ACTUAL_TIMESTAMP"] = pd.to_datetime(df["OPERATION_ACTUAL_TIMESTAMP"])
+        df["OPERATIONAL_DAY"] = pd.to_datetime(df["OPERATIONAL_DAY"]).dt.date.astype(str)
  
         day_df = df[
             (df["OPERATIONAL_DAY"] == day) &
@@ -89,42 +85,32 @@ class Timetable:
         for tn, grp in day_df.groupby("TRAIN_NUMBER"):
             grp = grp.sort_values(["OPERATION_TRAIN_RUN_SEQUENCE_NUMBER", "EVENT_TYPE"])
  
-            # Drop stale stops from a previous run that leaked into this operational day.
-            # These appear as very low sequence numbers (e.g. seq=1 BI departure from the
-            # previous NE->BI run) before the actual corridor run begins (seq=30+).
-            # Strategy: find the longest monotonically-consistent sequence of stops that
-            # forms a single corridor traversal, by detecting a sequence number gap > 5
-            # between the stale prefix and the real run.
             seq_vals = grp["OPERATION_TRAIN_RUN_SEQUENCE_NUMBER"].values
             if len(seq_vals) > 1:
                 gaps = [seq_vals[i+1] - seq_vals[i] for i in range(len(seq_vals)-1)]
                 big_gap = next((i+1 for i, g in enumerate(gaps) if g > 5), None)
                 if big_gap is not None:
-                    # Check if the prefix (before gap) is a single stale stop/pair
-                    # vs the real run being in the prefix. Use timestamp ordering:
-                    # the real run starts at the earliest planned_ts cluster.
                     prefix_ts = grp.iloc[:big_gap]["OPERATION_PLANNED_TIMESTAMP"].min()
                     suffix_ts = grp.iloc[big_gap:]["OPERATION_PLANNED_TIMESTAMP"].min()
                     if prefix_ts > suffix_ts:
-                        # Prefix is later in the day → it's the stale previous-run stop
                         grp = grp.iloc[big_gap:]
 
             stops = []
             for _, row in grp.iterrows():
                 stops.append(StopEntry(
-                    train_number  = int(tn),
-                    station       = row["OPERATING_POINT_ABBREVIATION"],
-                    event_type    = row["EVENT_TYPE"],
-                    event_served  = row["EVENT_SERVED"],
-                    stop_type     = row.get("PLAN_STOP_TYPE", "commercialStop"),
-                    planned_ts    = row["OPERATION_PLANNED_TIMESTAMP"],
-                    actual_ts     = row["OPERATION_ACTUAL_TIMESTAMP"],
-                    period_id     = row["OPERATION_DAY_PERIOD_IDENTIFIER_COARSE"],
-                    actual_delay  = float(row["delay_sec"])
+                    train_number = int(tn),
+                    station = row["OPERATING_POINT_ABBREVIATION"],
+                    event_type = row["EVENT_TYPE"],
+                    event_served = row["EVENT_SERVED"],
+                    stop_type = row.get("PLAN_STOP_TYPE", "commercialStop"),
+                    planned_ts = row["OPERATION_PLANNED_TIMESTAMP"],
+                    actual_ts = row["OPERATION_ACTUAL_TIMESTAMP"],
+                    period_id = row["OPERATION_DAY_PERIOD_IDENTIFIER_COARSE"],
+                    actual_delay = float(row["delay_sec"])
                                     if pd.notna(row["delay_sec"]) else float("nan"),
-                    sequence      = float(row["OPERATION_TRAIN_RUN_SEQUENCE_NUMBER"]),
-                    line          = str(row.get("COMMERCIAL_LINE_NUMBER_DESIGNATION", "")),
-                    category      = str(row.get("OPERATION_TRAFFIC_CATEGORY_ABBREVIATION", "")),
+                    sequence = float(row["OPERATION_TRAIN_RUN_SEQUENCE_NUMBER"]),
+                    line = str(row.get("COMMERCIAL_LINE_NUMBER_DESIGNATION", "")),
+                    category = str(row.get("OPERATION_TRAFFIC_CATEGORY_ABBREVIATION", "")),
                     max_speed_kmh = int(row.get("PLAN_FORMATION_MAXIMAL_VELOCITY", 140)),
                 ))
  

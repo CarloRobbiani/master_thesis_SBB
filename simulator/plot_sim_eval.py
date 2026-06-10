@@ -1,3 +1,7 @@
+"""
+Use the pretrained MATGCN to predict the simulated delays
+"""
+
 import torch
 import os
 import numpy as np
@@ -47,7 +51,7 @@ SEQ_LEN     = 28
 BATCH_SIZE  = 32
 DEVICE      = device
 
-# -- load data -----------------------------------------------------------------
+# -- load data ------------------
 print("Loading data …")
 station_arr, external_arr, target_arr, stations = load_and_pivot(
     DATA_PATH, STATION_FEATURE_COLS, EXTERNAL_COLS, sim=False
@@ -59,7 +63,7 @@ T = len(station_arr)
 F = station_arr.shape[-1]
 E = external_arr.shape[-1]
 
-# -- load stats fitted on original training data -----------------------------------
+# -- load stats fitted on original training data ------------
 with open("data/train_stats.json") as f:
     tg_min = json.load(f)["tg_min"]
 
@@ -78,25 +82,25 @@ station_arr_norm = feat_scaler.transform(
     station_arr.reshape(-1, F)
 ).reshape(T, N, F)
 
-# -- log1p transform targets with real-data shift ---------------------
+# -- log1p transform targets with real-data shift --------
 def to_log(a):
     return np.log1p(np.clip(a - tg_min, 0, None))
 
 def from_log(a):
     return np.expm1(a) + tg_min
 
-# Evaluate on the full simulator dataset
+
 target_log = to_log(target_arr)     # (T, N, 2)
 T_sim, N_sim, C = target_log.shape
 target_scaled = target_scaler.transform(target_log.reshape(-1, C)).reshape(T_sim, N_sim, C)
 
 
-# -- dataset / loader ----------------------------------------------------------
-# DelayDataset appends lagged targets internally → x becomes (T, N, F+2)
+# -- dataset / loader ---------
+# DelayDataset appends lagged targets internally
 sim_ds     = DelayDataset(station_arr_norm, external_arr, target_scaled, SEQ_LEN, HORIZON)
 sim_loader = DataLoader(sim_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
-# -- model ---------------------------------------------------------------------
+# -- model -----------
 model = StationMATGCN(
     num_station_features  = F + 2,      # +2 for lagged dep/arr targets
     num_external_features = E,
@@ -107,41 +111,41 @@ model = StationMATGCN(
 ).to(DEVICE)
 
 model.load_state_dict(torch.load(
-    "graph_models/station_graph/best_matgcn_augmented.pt", map_location=DEVICE
+    "graph_models/station_graph/best_matgcn_augmented.pt", map_location=DEVICE # load the MATGCN model
 ))
 model.eval()
 
 station_list_path = os.path.join("data", "station_list.csv")
 laplacian = prepare_laplacian(station_list_path, DEVICE)
 
-# -- inference -----------------------------------------------------------------
+# -- Predicting --------
 all_preds, all_trues = [], []
 
 with torch.no_grad():
     for x, ext, y in sim_loader:
         x, ext, y = x.to(DEVICE), ext.to(DEVICE), y.to(DEVICE)
-        pred = model(x, ext, laplacian)     # (B, N, horizon, 2)
-        pred = pred.squeeze(2)              # (B, N, 2)
+        pred = model(x, ext, laplacian) # (B, N, horizon, 2)
+        pred = pred.squeeze(2) # (B, N, 2)
         all_preds.append(pred.cpu().numpy())
-        all_trues.append(y.cpu().numpy())   # y is (B, N, 2)
+        all_trues.append(y.cpu().numpy()) # (B, N, 2)
 
-preds_log = np.concatenate(all_preds)       # (num_samples, N, 2)
+preds_log = np.concatenate(all_preds) # (num_samples, N, 2)
 trues_log = np.concatenate(all_trues)
 
 preds_log = invert_targets(preds_log)
 trues_log = invert_targets(trues_log)
 
-preds = from_log(preds_log)                 # (num_samples, N, 2)
+preds = from_log(preds_log)               
 trues = from_log(trues_log)
 
-# -- metrics per channel -------------------------------------------------------
+# -- metrics per channel --------
 for ch, ch_name in enumerate(["Departure", "Arrival"]):
     mae  = float(np.abs(preds[..., ch] - trues[..., ch]).mean())
     rmse = float(np.sqrt(((preds[..., ch] - trues[..., ch]) ** 2).mean()))
     print(f"\n{ch_name}  MAE : {mae:.1f} sec")
     print(f"{ch_name} RMSE : {rmse:.1f} sec")
 
-# -- plots: scatter + error histogram per channel ------------------------------
+# --  scatter and error histogram per channel -------
 STATION_IDX = None  # set to int to inspect a single station
 WINDOW      = None  # set to int to limit timesteps shown
 

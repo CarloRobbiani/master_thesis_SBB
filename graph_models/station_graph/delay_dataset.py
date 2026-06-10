@@ -7,9 +7,9 @@ class DelayDataset(Dataset):
     Sliding-window dataset.
  
     Each sample:
-      x        : (SEQ_LEN, N, F)   - station features window
-      external : (SEQ_LEN, E)      - external features window
-      y        : (N, HORIZON)      - target delay for next HORIZON steps
+      x : (SEQ_LEN, N, F) station features window
+      external : (SEQ_LEN, E) external features window
+      y : (N, HORIZON) target delay for next HORIZON steps
     """
     def __init__(self, station_arr, external_arr, target_arr, seq_len, horizon):
 
@@ -32,6 +32,7 @@ class DelayDataset(Dataset):
         return len(self.indices)
  
     def __getitem__(self, idx):
+        # Returns current idx plus last seq_len timesteps
         i   = self.indices[idx]
         x   = self.station [i - self.seq_len : i] # (L, N, F)
         ext = self.external[i - self.seq_len : i] # (L, E)

@@ -19,7 +19,7 @@ class XGBoostBaseline:
         
 
     def fit(self, X, Y,  X_val=None, Y_val=None):
-        # Accept DataFrame or numpy array
+        # Works with DataFrame or numpy array
         if isinstance(X, pd.DataFrame):
             X_flat = X.values
             n_samples = X.shape[0]

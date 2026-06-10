@@ -52,9 +52,6 @@ def filter_parquet_file(filepath: str):
 
         filtered = table.filter(mask)
 
-        if writer is None:
-            writer = pq.ParquetWriter("data/train_data_small.parquet", filtered.schema)
-
         writer.write_table(filtered)
 
     if writer:

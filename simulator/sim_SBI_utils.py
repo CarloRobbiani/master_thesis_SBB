@@ -45,13 +45,12 @@ def select_calibration_days(
     day_df = delay_stats.merge(weather_stats, on=day_col, how="left")
     day_df = day_df[day_df["n_trains"] >= 10].copy()
 
-    # ── Adaptive regime boundaries from actual data percentiles ───────────────
-    # Instead of fixed thresholds, split on the actual distribution of your data
+    # -- Adaptive regime boundaries from actual data percentiles ---------------
     low_thresh  = float(day_df["mean_delay"].quantile(0.33))
     high_thresh = float(day_df["mean_delay"].quantile(0.67))
-    print(f"\nAdaptive delay thresholds (based on your data):")
+    print(f"\nAdaptive delay thresholds:")
     print(f"  low  < {low_thresh:.1f}s  (bottom third)")
-    print(f"  medium {low_thresh:.1f}s – {high_thresh:.1f}s  (middle third)")
+    print(f"  medium {low_thresh:.1f}s - {high_thresh:.1f}s  (middle third)")
     print(f"  high > {high_thresh:.1f}s  (top third)")
 
     day_df["delay_regime"] = pd.cut(
@@ -69,9 +68,9 @@ def select_calibration_days(
     print(f"  wind > {wind_thresh:.1f} m/s   (top 25% of windy days)")
 
     day_df["has_rain"] = day_df["rain_mm10"] * 6 > rain_thresh
-    day_df["has_wind"] = day_df["wind_ms"]       > wind_thresh
-    day_df["has_frost"]= day_df["temp_c"]        < -5
-    day_df["has_snow"] = day_df["snow_cm"]        > 5
+    day_df["has_wind"] = day_df["wind_ms"] > wind_thresh
+    day_df["has_frost"]= day_df["temp_c"]  < -5
+    day_df["has_snow"] = day_df["snow_cm"] > 5
 
     day_df["has_weather"] = (
         day_df["has_rain"] | day_df["has_wind"] |
@@ -83,7 +82,7 @@ def select_calibration_days(
         day_df["has_weather"].map({True: "weather", False: "calm"})
     )
 
-    # ── Print regime overview ─────────────────────────────────────────────────
+    # -- Print regime overview ------
     print(f"\n{'Regime':<22} {'Days':>6}  {'Mean delay':>12}  "
           f"{'Mean rain':>10}  {'Mean wind':>10}")
     print("  " + "-" * 68)
@@ -93,7 +92,7 @@ def select_calibration_days(
               f"{grp.get('rain_mm10', pd.Series([0])).mean()*6:>9.2f}mm/h  "
               f"{grp.get('wind_ms', pd.Series([0])).mean():>9.1f}m/s")
 
-    # ── Stratified sampling — equal slots per regime, fill from available ─────
+    # -- Stratified sampling: equal slots per regime, fill from available -----
     regimes = day_df["regime"].unique().tolist()
     slots_per_regime = max(2, n_days // len(regimes))
 
@@ -129,7 +128,7 @@ def select_calibration_days(
     if extra_needed > 0 and not remaining.empty:
         extra = remaining.head(extra_needed)[day_col].tolist()
         selected.extend(extra)
-        print(f"\n  Filling {len(extra)} remaining slot(s) from highest p90 days:")
+        print(f"Filling {len(extra)} remaining slot(s) from highest p90 days:")
         for d in extra:
             row = remaining[remaining[day_col] == d].iloc[0]
             print(f"    {d}  mean={row['mean_delay']:>+6.1f}s  "
@@ -139,19 +138,18 @@ def select_calibration_days(
     seen2 = set()
     final = [d for d in selected if not (d in seen2 or seen2.add(d))]
 
-    print(f"\nFinal selection: {len(final)} days")
-    print(f"  {final}")
+    print(f"Final selection: {len(final)} days")
+    print(f" {final}")
     return final
 
 if __name__ == "__main__":
     calibration_days = select_calibration_days(
     parquet_path = "data/train_data_weather.parquet",
-    n_days       = 12,   # aim for 16 with 1000 sims/day = 16k total
+    n_days       = 12,  
     )
 
     print(calibration_days)
 
-    # Run this after generating your long evaluation CSV
     df = pd.read_csv("simulator/data/sim_with_sbi_long.csv")
     df["OPERATION_PLANNED_TIMESTAMP"] = pd.to_datetime(df["OPERATION_PLANNED_TIMESTAMP"])
     df["day"] = df["OPERATION_PLANNED_TIMESTAMP"].dt.date.astype(str)
@@ -181,5 +179,5 @@ if __name__ == "__main__":
             f"{row['actual_mean']:>+9.1f}s {row['sim_mean']:>+9.1f}s "
             f"{int(row['n']):>6}{flag}")
 
-    print(f"\nOverall MAE: {deps['SIMULATED_DELAY'].sub(deps['DAILY_PLAN_OPERATIONAL_DELAY_SEC']).abs().mean():.1f}s")
+    print(f"Overall MAE: {deps['SIMULATED_DELAY'].sub(deps['DAILY_PLAN_OPERATIONAL_DELAY_SEC']).abs().mean():.1f}s")
 

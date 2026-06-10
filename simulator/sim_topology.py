@@ -2,9 +2,9 @@ from dataclasses import dataclass
 import pandas as pd
 import numpy as np
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
 # TOPOLOGY
-# ══════════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------------
  
 @dataclass(frozen=True)
 class Segment:
@@ -28,7 +28,7 @@ class Station:
     is_terminus:   bool = False
  
  
-# ── Real topology (2025, before Ligerz Tunnel opens) ─────────────────────────
+# -- Real topology (2025, before Ligerz Tunnel opens) -------------------------
 #
 # Sources:
 #   • Wikipedia – Jura Foot Railway (double/single track)
@@ -38,10 +38,10 @@ class Station:
 #
 STATIONS: dict[str, Station] = {
     "BI":   Station("Biel/Bienne",       "BI",   0.0,  8, False, is_terminus=True),
-    "TUE":  Station("Tüscherz",          "TUE",  9.5,  2, True),    # crossing loop
-    "TWN":  Station("Twann      ",       "TWN", 14.2,  2, True),    # crossing loop
+    "TUE":  Station("Tüscherz",          "TUE",  9.5,  2, True),    
+    "TWN":  Station("Twann      ",       "TWN", 14.2,  2, True),    
     "LIG":  Station("Ligerz",            "LIG", 16.8,  1, False),   # single-track station
-    "NV":   Station("La Neuveville",     "NV",  20.3,  2, True),    # crossing loop
+    "NV":   Station("La Neuveville",     "NV",  20.3,  2, True),   
     "LD":   Station("Le Landeron",       "LD",  24.1,  2, False),
     "CRNE": Station("Cressier NE",       "CRNE",27.0,  2, False),
     "CORN": Station("Corneaux",          "CORN",29.8,  2, False),
@@ -49,7 +49,7 @@ STATIONS: dict[str, Station] = {
     "NE":   Station("Neuchâtel",         "NE",  38.0,  8, False, is_terminus=True),
 }
  
-# Canonical order BI → NE
+
 LINE_ORDER = ["BI", "TUE", "TWN", "LIG", "NV", "LD", "CRNE", "CORN", "SBL", "NE"]
  
 # Track segments (both directions defined)
@@ -79,17 +79,6 @@ def build_planned_segment_times(
     Returns {(origin, dest, line): seconds} for all station pairs a train
     traverses on the corridor, including non-adjacent jumps (e.g. IC5 skips
     SBL and jumps CORN->NE directly).
- 
-    Segment time is always: departure at origin -> arrival at destination.
-    This is correct because pass stops have identical arr/dep timestamps,
-    so dep->dep or arr->arr gives wrong (0s or 60s) values.
- 
-    Non-adjacent pairs (skipped stations) are stored directly from the data
-    rather than being reconstructed by summing physics estimates, which are
-    systematically too short due to operational speed limits and braking.
- 
-    A "fallback" key per adjacent segment pair holds the cross-line median,
-    used when a specific line has no data for that segment.
     """
     df = df.copy()
     df["OPERATION_PLANNED_TIMESTAMP"] = pd.to_datetime(df["OPERATION_PLANNED_TIMESTAMP"])
@@ -123,8 +112,7 @@ def build_planned_segment_times(
                 d_idx = LINE_ORDER.index(dest)
                 if origin == dest:
                     continue
-                # Skip this pair if there is an intermediate departure station
-                # between origin and dest — a finer-grained segment covers it.
+                # Skip this pair if there is an intermediate departure station between origin and dest
                 intermediate_deps = [
                     s for s in dep_stns
                     if min(o_idx, d_idx) < LINE_ORDER.index(s) < max(o_idx, d_idx)
@@ -136,7 +124,6 @@ def build_planned_segment_times(
                 if 30 < delta < 3600:
                     times.setdefault((origin, dest, line), []).append(delta)
  
-    # Build result: per-line median + cross-line fallback (adjacent segments only)
     result: dict[tuple[str, str, str], int] = {}
     all_pairs = set((o, d) for o, d, _ in times.keys())
  
@@ -156,9 +143,7 @@ def build_planned_segment_times(
  
     return result
  
-
 # Minimum dwell times (seconds)
 MIN_DWELL = {"commercialStop": 30, "pass": 0}
  
-# Punctuality threshold (Swiss standard: 3 minutes)
 PUNCTUALITY_SEC = 180
