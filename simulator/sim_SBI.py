@@ -276,7 +276,7 @@ def build_simulator_fn(
     ----------
     df_raw  : raw operational + weather DataFrame
     day   : operational day string, e.g. "2025-01-15"
-    PLANNED_SEGMENT_TIMES : pre-built segment time dict (pass the pickled one)
+    PLANNED_SEGMENT_TIMES : pre-built segment time dict (pass the pickle)
     speed_factors   : dict loaded from weather_factors.json
     seed    
     """

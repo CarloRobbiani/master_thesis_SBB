@@ -15,7 +15,8 @@ import matplotlib.pyplot as plt
 df_real = pd.read_parquet("data/train_data_augmented.parquet")
 df_real = df_real.sort_values("OPERATION_PLANNED_TIMESTAMP")
 
-df = pd.read_parquet("simulator\data_scenarios\synthetic_mild_snow.parquet")
+#df = pd.read_parquet("simulator\data_scenarios\synthetic_mild_snow.parquet")
+df = pd.read_parquet("data/train_data_weather.parquet")
 df = df.sort_values("OPERATION_PLANNED_TIMESTAMP")
 
 # -- Add temporal Encodings ---
@@ -41,8 +42,8 @@ for col in df.select_dtypes(include=["int64", "float64"]).columns:
     df[col] = pd.to_numeric(df[col], downcast="float")
 
 #target_col = 'DAILY_PLAN_OPERATIONAL_DELAY_SEC'
-target_col = 'SIMULATED_DELAY'
-X,Y = preprocess_train(df, target_column=target_col)
+#target_col = 'SIMULATED_DELAY'
+X,Y = preprocess_train(df, target_column="DAILY_PLAN_OPERATIONAL_DELAY_SEC")
 X_real, y_real = preprocess_train(df_real, target_column="DAILY_PLAN_OPERATIONAL_DELAY_SEC")
 
 X_train, X_val, X_test, y_train, y_val, y_test = time_split(X, Y)

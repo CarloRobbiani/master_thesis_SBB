@@ -206,7 +206,7 @@ def augment_real_data(real_df: str):
 def shift_timestamps(df, offset_days):
     """
     Shifts the timestamps of the synthethic df to avoid duplicates
-    The synthethic data simulated 46 days
+    The synthethic data simulated 16 days
     """
 
     cols = [
