@@ -2,14 +2,16 @@ import xgboost as xgb
 import numpy as np
 import pandas as pd
 import shap
+from sklearn.metrics import mean_absolute_error
+import numpy as np
 
 class XGBoostBaseline:
     def __init__(self, params=None):
         self.params = params or {
             "objective": "reg:squarederror",
             "n_estimators": 500,
-            "max_depth": 10,
-            "learning_rate": 0.05,
+            "max_depth": 15,
+            "learning_rate": 0.1,
             "subsample": 0.8,
             "colsample_bytree": 0.8
         }
@@ -17,7 +19,7 @@ class XGBoostBaseline:
         
 
     def fit(self, X, Y,  X_val=None, Y_val=None):
-        # Accept DataFrame or numpy array
+        # Works with DataFrame or numpy array
         if isinstance(X, pd.DataFrame):
             X_flat = X.values
             n_samples = X.shape[0]
@@ -88,9 +90,8 @@ class XGBoostBaseline:
         plt.title(f'Loss Curve (Horizon step {horizon_step})')
         plt.legend()
         plt.grid()
-        plt.show()
-
         plt.savefig("images\RMSE_curves_XGboost.png")
+        plt.show()
 
     def predict(self, X):
         if isinstance(X, pd.DataFrame):
@@ -114,50 +115,42 @@ class XGBoostBaseline:
             return Y_pred
         
 
-    def feature_importance(self, feature_names=None, importance_type="gain", aggregate="mean"):
-        """
-        Extract feature importance for each horizon model.
+    def permutation_importance(self, X_sample, Y_sample, n_repeats=5, metric="mae"):
 
-        Parameters:
-            feature_names : list of str
-            importance_type : 'gain', 'weight', 'cover'
-            aggregate : 'mean' or 'sum'
+        if isinstance(X_sample, pd.DataFrame):
+            X_arr = X_sample.values
+            feature_names = X_sample.columns.tolist()
+        else:
+            X_arr = X_sample
+            feature_names = [f"f{i}" for i in range(X_arr.shape[1])]
 
-        Returns:
-            pd.DataFrame with importance per feature
-        """
+        baseline_pred = self.predict(X_sample)
+        baseline_score = mean_absolute_error(Y_sample, baseline_pred)
 
-        all_importances = []
+        importances = np.zeros((len(feature_names), n_repeats))
 
-        for model in self.models:
-            booster = model.get_booster()
-            score = booster.get_score(importance_type=importance_type)
+        for i in range(len(feature_names)):
+            for r in range(n_repeats):
+                X_permuted = X_arr.copy()
+                X_permuted[:, i] = np.random.permutation(X_permuted[:, i])
 
-            # Convert to full vector
-            if feature_names is None:
-                n_features = model.n_features_in_
-                feature_names = [f"f{i}" for i in range(n_features)]
+                if isinstance(X_sample, pd.DataFrame):
+                    X_perm_df = pd.DataFrame(X_permuted, columns=feature_names)
+                    perm_pred = self.predict(X_perm_df)
+                else:
+                    perm_pred = self.predict(X_permuted)
 
-            imp = np.zeros(len(feature_names))
-            for i, fname in enumerate(feature_names):
-                key = f"f{i}"
-                imp[i] = score.get(key, 0.0)
+                perm_score = mean_absolute_error(Y_sample, perm_pred)
+                importances[i, r] = perm_score - baseline_score  # higher = more important
 
-            all_importances.append(imp)
+        mean_imp = importances.mean(axis=1)
+        std_imp = importances.std(axis=1)
 
-        all_importances = np.array(all_importances)
-
-        if aggregate == "mean":
-            final_importance = all_importances.mean(axis=0)
-        elif aggregate == "sum":
-            final_importance = all_importances.sum(axis=0)
-
-        df = pd.DataFrame({
+        return pd.DataFrame({
             "feature": feature_names,
-            "importance": final_importance
+            "importance": mean_imp,
+            "std": std_imp
         }).sort_values("importance", ascending=False)
-
-        return df
     
     def shap_importance(self, X_sample):
         shap_values_all = []
@@ -172,4 +165,49 @@ class XGBoostBaseline:
         # Mean across horizons and samples
         mean_shap = shap_values_all.mean(axis=(0,1))
 
-        return mean_shap
+        return pd.DataFrame({
+            "feature": X_sample.columns,
+            "importance": mean_shap
+        }).sort_values("importance", ascending=False)
+
+        #return mean_shap
+
+    def shap_dependence(self, X_sample, feature):
+        """
+        Returns feature values and corresponding SHAP contributions
+        across all models (horizons).
+        contribution means how much delay it adds/removes
+        """
+
+        feature_idx = list(X_sample.columns).index(feature)
+
+        values_all = []
+        shap_all = []
+
+        for model in self.models:
+            explainer = shap.TreeExplainer(model)
+            shap_values = explainer.shap_values(X_sample)
+
+            if isinstance(shap_values, list):
+                shap_values = np.array(shap_values).mean(axis=0)
+
+            values_all.append(X_sample.iloc[:, feature_idx].values)
+            shap_all.append(shap_values[:, feature_idx])
+
+        values_all = np.concatenate(values_all)
+        shap_all = np.concatenate(shap_all)
+
+        return pd.DataFrame({
+            "feature_value": values_all,
+            "shap_value": shap_all
+        })
+    
+def summarize_dependence(dep_df, n_bins=20):
+    dep_df["bin"] = pd.qcut(dep_df["feature_value"], q=n_bins, duplicates="drop")
+
+    summary = dep_df.groupby("bin", observed=False).agg({
+        "feature_value": "mean",
+        "shap_value": "mean"
+    }).reset_index(drop=True)
+
+    return summary

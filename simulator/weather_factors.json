@@ -1,0 +1,50 @@
+{
+    "normal": {
+        "air_temp": 0.95,
+        "wind_high_exposed": 0.9,
+        "wind_high": 0.95,
+        "wind_moderate": 0.98,
+        "rain_high": 0.95,
+        "rain_moderate": 0.98,
+        "rain_low": 1.0,
+        "snow_high": 0.85,
+        "snow_low": 0.95,
+        "switch_fail_high": 0.1,
+        "switch_fail_moderate": 0.05,
+        "switch_fail_low": 0.01,
+        "sigma_travel": 0.05,
+        "sigma_dwell": 10
+    },
+    "learned": {
+        "air_temp": 0.8493,
+        "wind_high_exposed": 0.6693,
+        "wind_high": 0.7752,
+        "wind_moderate": 0.8481,
+        "rain_high": 0.7672,
+        "rain_moderate": 0.8004,
+        "rain_low": 0.8929,
+        "snow_high": 0.6747,
+        "snow_low": 0.7799,
+        "switch_fail_high": 0.2206,
+        "switch_fail_moderate": 0.1046,
+        "switch_fail_low": 0.1005,
+        "sigma_travel": 0.0455,
+        "sigma_dwell": 4.5187
+    },
+    "no": {
+        "air_temp": 1.0,
+        "wind_high_exposed": 1.0,
+        "wind_high": 1.0,
+        "wind_moderate": 1.0,
+        "rain_high": 1.0,
+        "rain_moderate": 1.0,
+        "rain_low": 1.0,
+        "snow_high": 1.0,
+        "snow_low": 1.0,
+        "switch_fail_high": 0.0,
+        "switch_fail_moderate": 0.0,
+        "switch_fail_low": 0.0,
+        "sigma_travel": 0.0,
+        "sigma_dwell": 0
+    }
+}

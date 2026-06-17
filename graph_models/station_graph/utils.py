@@ -16,7 +16,7 @@ from sklearn.preprocessing import StandardScaler
 class ChebGraphConv(nn.Module):
     def __init__(self, in_channels, out_channels, K):
         super().__init__()
-        self.K = K
+        self.K = K # Number of hops to make
         self.linear = nn.Linear(in_channels * K, out_channels)
 
     def forward(self, x, laplacian):
@@ -43,16 +43,19 @@ class FeatureAttention(nn.Module):
         super().__init__()
         self.fc = nn.Linear(feature_dim, feature_dim)
 
-    def forward(self, x):
+    def forward(self, x, return_weights=False):
         # x: [B, T, N, F]
         weights = torch.softmax(self.fc(x), dim=-1)
+        if return_weights:
+            return x * weights, weights
         return x * weights
+
 
 class TemporalAttention(nn.Module):
     def __init__(self, hidden_dim):
         super().__init__()
         self.query = nn.Linear(hidden_dim, hidden_dim)
-        self.key = nn.Linear(hidden_dim, hidden_dim)
+        self.key   = nn.Linear(hidden_dim, hidden_dim)
         self.value = nn.Linear(hidden_dim, hidden_dim)
 
     def forward(self, x):
@@ -67,64 +70,63 @@ class TemporalAttention(nn.Module):
         attn = torch.softmax(scores, dim=-1)
         return torch.einsum("btns,bsnd->btnd", attn, V)
 
+
 class STBlock(nn.Module):
-    def __init__(self, in_channels, hidden_dim, K):
+    def __init__(self, in_channels, hidden_dim, K, dropout=0.1):
         super().__init__()
 
-        self.feature_att = FeatureAttention(in_channels)
+        self.feature_att  = FeatureAttention(in_channels)
         self.temporal_att = TemporalAttention(in_channels)
-
-        self.graph_conv = ChebGraphConv(in_channels, hidden_dim, K)
+        self.graph_conv   = ChebGraphConv(in_channels, hidden_dim, K)
 
         self.temporal_conv = nn.Conv2d(
-            hidden_dim,
-            hidden_dim,
-            kernel_size=(3, 1),
-            padding=(1, 0)
+            hidden_dim, hidden_dim,
+            kernel_size=(3, 1), padding=(1, 0)
         )
 
-        self.norm = nn.LayerNorm(hidden_dim)
+        self.dropout = nn.Dropout(p=dropout)
+        self.norm    = nn.LayerNorm(hidden_dim)
 
-    def forward(self, x, laplacian):
+    def forward(self, x, laplacian, return_att=False):
         # x: [B, T, N, F]
-
         residual = x
 
-        x = self.feature_att(x)
-        x = self.temporal_att(x)
+        if return_att:
+            x, feat_w = self.feature_att(x, return_weights=True)
+        else:
+            x = self.feature_att(x)
 
+        x = self.temporal_att(x)
         x = self.graph_conv(x, laplacian)
 
         x = x.permute(0, 3, 1, 2)
         x = self.temporal_conv(x)
+        x = self.dropout(x)
         x = x.permute(0, 2, 3, 1)
 
-        return self.norm(x + residual)
-        #return self.norm(x)
-    
+        out = self.norm(x + residual)
+
+        if return_att:
+            return out, feat_w
+        return out
+
+
 def compute_laplacian(adj):
-    D = torch.diag(torch.sum(adj, dim=1))
-    L = D - adj
+    D          = torch.diag(torch.sum(adj, dim=1))
+    L          = D - adj
     D_inv_sqrt = torch.diag(1.0 / torch.sqrt(torch.sum(adj, dim=1) + 1e-6))
     return D_inv_sqrt @ L @ D_inv_sqrt
 
+
 def prepare_laplacian(station_list_path, device):
-    """
-    Takes the station_list path that points to a .csv file and returns the 
-    laplacian from the adjacency matrix
-    """
-    adj = torch.tensor(create_adj_matrix(station_list_path))
-    laplacian = compute_laplacian(adj).float().to(device)
+    adj        = torch.tensor(create_adj_matrix(station_list_path))
+    laplacian  = compute_laplacian(adj).float().to(device)
     lambda_max = torch.linalg.eigvals(laplacian).real.max()
-    laplacian = (2 / lambda_max) * laplacian - torch.eye(laplacian.size(0), device=device)
+    laplacian  = (2 / lambda_max) * laplacian - torch.eye(laplacian.size(0), device=device)
     return laplacian
 
-def filter_tensors(data_tensor: torch.tensor, train_end, val_end, timestamps):
-    """
-    Filter the tensor based on the given timestamps.
-    Returns a train, test and val tensor
-    """
-    # Remove timezone if present
+
+def filter_tensors(data_tensor: torch.Tensor, train_end, val_end, timestamps):
     if isinstance(timestamps, pd.DatetimeIndex):
         if timestamps.tz is not None:
             timestamps = timestamps.tz_convert(None)
@@ -132,298 +134,302 @@ def filter_tensors(data_tensor: torch.tensor, train_end, val_end, timestamps):
         if timestamps.dt.tz is not None:
             timestamps = timestamps.dt.tz_convert(None)
     else:
-        # If it's a plain Index, try to convert to DatetimeIndex
         timestamps = pd.to_datetime(timestamps, utc=True)
         if hasattr(timestamps, 'tz') and timestamps.tz is not None:
             timestamps = timestamps.tz_convert(None)
-    
+
     train_idx = timestamps < train_end
     val_idx   = (timestamps >= train_end) & (timestamps < val_end)
     test_idx  = timestamps >= val_end
 
-    train = data_tensor[train_idx]
-    val = data_tensor[val_idx]
-    test = data_tensor[test_idx]
+    return data_tensor[train_idx], data_tensor[val_idx], data_tensor[test_idx]
 
-    return train, val, test
-    
 
-def create_df_tensors(df: pd.DataFrame):
+def load_and_pivot(path: str, STATION_FEATURE_COLS, EXTERNAL_COLS, sim = False):
     """
-    Creates tensors from the train Dataframe
-    Returns: station_tensor, external_tensor, target_tensor, timestamps
+    Load the parquet/csv file and return arrays for the MATGCN model.
+
+    Returns
+    -------
+        station_arr  : np.ndarray (T, N, F)
+        external_arr : np.ndarray (T, E)
+        target_arr   : np.ndarray (T, N, 2)  — [dep_delay, arr_delay] in seconds
+        stations     : list[str]
     """
-    # Features the stations should have
-    station_feature_cols = [
-        "EVENT_TYPE",
-        "EVENT_SERVED",
-        "PLAN_STOP_TYPE", 
-        "OPERATION_DAY_PERIOD_IDENTIFIER_COARSE",
-        'OPERATION_TRAFFIC_CATEGORY_ABBREVIATION',
-        'PLAN_FORMATION_MAXIMAL_VELOCITY',
-        "hour_sin",
-        "hour_cos",
-        "dow_sin",
-        "dow_cos"
-    ]
-
-    # Features for the external tensor
-    external_cols = [
-        'tre200s0', 'fkl010z1', 'fu3010z0', 'rre150z0',
-       'htoauts0', 'hto000d0'
-    ]
-
-    target_col = "DAILY_PLAN_OPERATIONAL_DELAY_SEC"
-
-    # --- Sort ---
-    df = df.sort_values(["OPERATION_ACTUAL_TIMESTAMP", "OPERATING_POINT_ABBREVIATION"])
-
-    # DEBUG: check which stations in the data match your hardcoded list
-    data_stations = set(df["OPERATING_POINT_ABBREVIATION"].unique())
-    expected_stations = {"BI","TUE","TWN","LIG","NV","LD","CRNE","CORN","SBLB","NE"}
-    unrecognised = data_stations - expected_stations
-    missing_from_data = expected_stations - data_stations
-    if unrecognised:
-        print(f"  WARNING: stations in data but not in hardcoded list (will be ignored): {unrecognised}")
-    if missing_from_data:
-        print(f"  WARNING: stations in hardcoded list but not in data (always NaN): {missing_from_data}")
+    if not sim:
+        df = pd.read_parquet(path)
+        TARGET_COL = "DAILY_PLAN_OPERATIONAL_DELAY_SEC"
+    else:
+        if path.endswith(".csv"):
+            df = pd.read_csv(path)
+        else:
+            df = pd.read_parquet(path)
+        TARGET_COL = "SIMULATED_DELAY"
 
 
-    # ---  Convert Boolean to int ---
-    print("converting boolean to int...")
-    df["EVENT_SERVED"] = df["EVENT_SERVED"].astype(int)
+    STATION_COL = "OPERATING_POINT_ABBREVIATION"
+    DATE_COL    = "OPERATION_PLANNED_TIMESTAMP"
 
+    df["OPERATION_ACTUAL_TIMESTAMP"]  = pd.to_datetime(df["OPERATION_ACTUAL_TIMESTAMP"])
+    df["OPERATION_PLANNED_TIMESTAMP"] = pd.to_datetime(df["OPERATION_PLANNED_TIMESTAMP"])
 
-    # --- Categorical encoding ---
-    print("categoircal encoding...")
-    exclude_cols = ["OPERATING_POINT_ABBREVIATION", "OPERATION_ACTUAL_TIMESTAMP"]
+    df["hour_sin"] = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 24)
+    df["hour_cos"] = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 24)
+    df["dow_sin"]  = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
+    df["dow_cos"]  = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
+    df["hto000d0"] = df["hto000d0"].fillna(0)
 
+    for drop_col in ["date", "days"]:
+        if drop_col in df.columns:
+            df = df.drop(columns=[drop_col])
+
+    df = df.sort_values([DATE_COL, STATION_COL]).reset_index(drop=True)
+
+    exclude_cols = ["OPERATION_ACTUAL_TIMESTAMP", TARGET_COL, DATE_COL]
     cat_cols = [
         col for col in df.select_dtypes(include="object").columns
         if col not in exclude_cols
     ]
-
     for col in cat_cols:
         df[col] = df[col].astype("category").cat.codes
 
-    # --- Handle missing values ---
-    print("handling missing values...")
-    #df = df.fillna(0)
-    print("\n[DEBUG create_df_tensors] --- Dropping rows with NaN target ---")
-    n_before = len(df)
-    df = df.dropna(subset=[target_col])
-    n_after = len(df)
-    print(f"  Dropped {n_before - n_after} rows  ({n_before} reduced to {n_after})")
+    def _mode(s):
+        m = s.mode()
+        return m.iloc[0] if len(m) else np.nan
 
-    # --- Create consistent indices ---
-    timestamps = sorted(df["OPERATION_ACTUAL_TIMESTAMP"].unique())
-    stations = ["BI","TUE","TWN","LIG","NV","LD","CRNE","CORN","SBLB","NE"]
+    cat_station_cols = [
+        c for c in STATION_FEATURE_COLS
+        if df[c].dtype in (object, "category")
+        or str(df[c].dtype) == "int8"
+        or df[c].nunique() < 20
+    ]
+    num_station_cols = [c for c in STATION_FEATURE_COLS if c not in cat_station_cols]
 
-    timestamp_to_idx = {t: i for i, t in enumerate(timestamps)}
-    station_to_idx = {s: i for i, s in enumerate(stations)}
+    agg_dict_feat = {c: _mode  for c in cat_station_cols}
+    agg_dict_feat.update({c: "mean"  for c in num_station_cols})
+    agg_dict_feat.update({c: "first" for c in EXTERNAL_COLS})
 
-    T_total = len(timestamps)
+    grp = df.groupby([DATE_COL, STATION_COL])
+
+    # Alphabetical encoding: 'arrival'=0, 'departure'=1
+    dep_target = (df[df["EVENT_TYPE"] == 1]
+                    .groupby([DATE_COL, STATION_COL])[TARGET_COL]
+                    .mean().rename("target_dep"))
+    arr_target = (df[df["EVENT_TYPE"] == 0]
+                    .groupby([DATE_COL, STATION_COL])[TARGET_COL]
+                    .mean().rename("target_arr"))
+
+    feat_agg = grp.agg(agg_dict_feat)
+    combined = feat_agg.join(dep_target).join(arr_target).reset_index()
+
+    stations   = sorted(combined[STATION_COL].unique())
+    timestamps = sorted(combined[DATE_COL].unique())
     N = len(stations)
+    T = len(timestamps)
+    F = len(STATION_FEATURE_COLS)
+    E = len(EXTERNAL_COLS) if EXTERNAL_COLS else 1
+    print(f"  Timesteps : {T},  Stations : {N}")
 
-    F = len(station_feature_cols)
-    E = len(external_cols)
+    station_arr  = np.full((T, N, F), np.nan, dtype=np.float32)
+    external_arr = np.full((T, E),    np.nan, dtype=np.float32)
+    target_arr   = np.full((T, N, 2), np.nan, dtype=np.float32)
 
-    # ---  Initialize tensors ---
-    station_tensor = np.full((T_total, N, F), np.nan, dtype=np.float32)
-    target_tensor = np.full((T_total, N), np.nan, dtype=np.float32)
-    external_tensor = np.full((T_total, E), np.nan, dtype=np.float32)
+    station_idx = {s: i for i, s in enumerate(stations)}
+    time_idx    = {t: i for i, t in enumerate(timestamps)}
 
-    # --- Fill tensors safely ---
-    for _, row in df.iterrows():
+    for _, row in combined.iterrows():
+        t = time_idx[row[DATE_COL]]
+        n = station_idx[row[STATION_COL]]
+        station_arr[t, n, :] = [
+            row[c] if pd.notna(row.get(c)) else np.nan
+            for c in STATION_FEATURE_COLS
+        ]
+        target_arr[t, n, 0] = row["target_dep"] if pd.notna(row.get("target_dep")) else np.nan
+        target_arr[t, n, 1] = row["target_arr"] if pd.notna(row.get("target_arr")) else np.nan
+        if EXTERNAL_COLS and np.isnan(external_arr[t, 0]):
+            external_arr[t, :] = [
+                row[c] if pd.notna(row.get(c)) else 0.0
+                for c in EXTERNAL_COLS
+            ]
 
-        t = timestamp_to_idx[row["OPERATION_ACTUAL_TIMESTAMP"]]
-        n = station_to_idx[row["OPERATING_POINT_ABBREVIATION"]]
+    print(f"  Station features ({F}): {STATION_FEATURE_COLS}")
+    print(f"  External features ({E}): {EXTERNAL_COLS}")
+    print(f"  NaNs before fill — station: {np.isnan(station_arr).sum()}, "
+          f"external: {np.isnan(external_arr).sum()}, "
+          f"target: {np.isnan(target_arr).sum()}")
 
-        # Node features
-        station_tensor[t, n, :] = row[station_feature_cols].values
-
-        # Target
-        target_tensor[t, n] = row[target_col]
-        #target_tensor = np.nan_to_num(target_tensor, nan=0.0)
-
-        # External (same for all stations)
-        if np.isnan(external_tensor[t, 0]):
-            external_tensor[t, :] = row[external_cols].values
-
-
-    ext_missing_before = np.isnan(external_tensor[:, 0]).sum()
-    print(f"\n[DEBUG create_df_tensors] --- Before forward-fill ---")
-    print(f"  Timesteps with no external data: {ext_missing_before} / {T_total}")
-    print(f"  NaNs — station: {np.isnan(station_tensor).sum()}  "
-          f"external: {np.isnan(external_tensor).sum()}  "
-          f"target: {np.isnan(target_tensor).sum()}")
-    
-    # forward fill over time
-    for f in range(E):
-        series = pd.Series(external_tensor[:, f])
-        external_tensor[:, f] = series.ffill().fillna(0)
+    # Forward filling
+    for e in range(E):
+        s = pd.Series(external_arr[:, e])
+        external_arr[:, e] = s.ffill().fillna(0).values
 
     for n in range(N):
         for f in range(F):
-            series = pd.Series(station_tensor[:, n, f])
-            station_tensor[:, n, f] = series.ffill().fillna(0)
+            s = pd.Series(station_arr[:, n, f])
+            station_arr[:, n, f] = s.ffill(limit=3).fillna(0).values
 
     for n in range(N):
-        series = pd.Series(target_tensor[:, n])
-        target_tensor[:, n] = series.ffill(limit=3)
+        for c in range(2):
+            s = pd.Series(target_arr[:, n, c])
+            target_arr[:, n, c] = s.ffill(limit=3).fillna(0).values
 
-    return station_tensor, external_tensor, target_tensor, timestamps
+    print(f"  NaNs after  fill — station: {np.isnan(station_arr).sum()}, "
+          f"external: {np.isnan(external_arr).sum()}, "
+          f"target: {np.isnan(target_arr).sum()}")
 
-
-def evaluate(model, dataloader, laplacian, criterion, device):
-
-    model.eval()
-
-    total_loss = 0
-    total_samples = 0
-
-    all_preds = []
-    all_targets = []
-
-    with torch.no_grad():
-
-        for x, e, y, m in dataloader:
-
-            x = x.to(device)
-            e = e.to(device)
-            y = y.to(device)
-            y = y.permute(0, 2, 1)
-            m = m.to(device)
-            m = m.permute(0, 2, 1)
-
-            pred = model(x, e, laplacian)
-
-            #loss = criterion(pred, y)
-            #loss = torch.nn.functional.smooth_l1_loss(pred, y)
-            # Masked loss
-            loss = ((pred - y) ** 2) * m
-            loss = loss.sum() / (m.sum() + 1e-6)
-
-            batch_size = x.shape[0]
-
-            total_loss += loss.item() * batch_size
-            total_samples += batch_size
-
-            # Collect ONLY valid values for RMSE
-            all_preds.append(pred[m].cpu())
-            all_targets.append(y[m].cpu())
-
-    # Concatenate all batches
-    all_preds = torch.cat(all_preds).cpu().numpy()
-    all_targets = torch.cat(all_targets).cpu().numpy()
-
-    all_preds = all_preds.reshape(-1)
-    all_targets = all_targets.reshape(-1)
-
-    rmse = root_mean_squared_error(all_targets, all_preds)
-
-    return total_loss / total_samples, rmse
-
-
-def load_and_pivot(path, STATION_FEATURE_COLS, EXTERNAL_COLS):
-    """
-    Load the parquet file and return a 3-D array of shape (T, N, F)
-    plus a separate external array (T, E) and a list of station ids.
- 
-    Strategy:
-      - Sort by DATE, then STATION_ID
-      - Pivot so rows = timesteps, columns = stations
-      - Return (station_features, external_features, station_ids, timestamps)
-    """
-    df = pd.read_parquet(path)
-    STATION_COL = "OPERATING_POINT_ABBREVIATION"
-    DATE_COL = "OPERATION_PLANNED_TIMESTAMP"
-    TARGET_COL = "DAILY_PLAN_OPERATIONAL_DELAY_SEC"
-    # Add temporal encoded time features
-    df["hour_sin"] = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 24)
-    df["hour_cos"] = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.hour / 24)
-    df["dow_sin"] = np.sin(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
-    df["dow_cos"] = np.cos(2 * np.pi * df["OPERATION_ACTUAL_TIMESTAMP"].dt.dayofweek / 7)
-    df["hto000d0"] = df["hto000d0"].fillna(0)
-    df = df.drop(["date", "days"], axis=1)
-    df = df.sort_values([DATE_COL, STATION_COL]).reset_index(drop=True)
-    exclude_cols = ["OPERATION_ACTUAL_TIMESTAMP", TARGET_COL, DATE_COL]
-
-    cat_cols = [
-        col for col in df.select_dtypes(include="object").columns
-        if col not in exclude_cols
-    ]
-
-    for col in cat_cols:
-        df[col] = df[col].astype("category").cat.codes
-
-    stations   = sorted(df[STATION_COL].unique())
-    timestamps = sorted(df[DATE_COL].unique())
-    N = len(stations)
-    T = len(timestamps)
-    print(f"  Timesteps : {T},  Stations : {N}")
- 
-    station_idx = {s: i for i, s in enumerate(stations)}
-    time_idx    = {t: i for i, t in enumerate(timestamps)}
- 
-    # ── auto-detect feature columns if not specified ──────────────────
-    #global STATION_FEATURE_COLS, EXTERNAL_COLS
- 
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    # remove target, and columns we will handle separately
-    skip = {TARGET_COL, STATION_COL}
- 
-    if not STATION_FEATURE_COLS and not EXTERNAL_COLS:
-        # Heuristic: a column is "external" if its std across stations at the
-        # same timestep is ~0 (same value everywhere).  Otherwise it's a
-        # station feature.
-        sample = df[df[DATE_COL] == timestamps[0]]
-        for col in numeric_cols:
-            if col in skip:
-                continue
-            if sample[col].std() < 1e-6:
-                EXTERNAL_COLS.append(col)
-            else:
-                STATION_FEATURE_COLS.append(col)
- 
-    # Always add target to station features (as input for autoregressive use)
-    all_station_cols = STATION_FEATURE_COLS + [TARGET_COL]
- 
-    print(f"  Station features ({len(all_station_cols)}): {all_station_cols}")
-    print(f"  External features ({len(EXTERNAL_COLS)}): {EXTERNAL_COLS}")
- 
-    # ── build dense arrays ────────────────────────────────────────────
-    F = len(all_station_cols)
-    E = len(EXTERNAL_COLS) if EXTERNAL_COLS else 1   # at least 1 dim
- 
-    station_arr  = np.zeros((T, N, F), dtype=np.float32)
-    external_arr = np.zeros((T, E),    dtype=np.float32)
-    target_arr   = np.zeros((T, N),    dtype=np.float32)
- 
-    for _, row in df.iterrows():
-        t = time_idx[row[DATE_COL]]
-        n = station_idx[row[STATION_COL]]
-        station_arr[t, n, :] = [row[c] if pd.notna(row.get(c)) else 0.0
-                                 for c in all_station_cols]
-        target_arr[t, n]     = row[TARGET_COL] if pd.notna(row[TARGET_COL]) else 0.0
-        if EXTERNAL_COLS:
-            external_arr[t, :] = [row[c] if pd.notna(row.get(c)) else 0.0
-                                   for c in EXTERNAL_COLS]
-        else:
-            # dummy external feature (all zeros) if none found
-            external_arr[t, 0] = 0.0
- 
     return station_arr, external_arr, target_arr, stations
- 
- 
+
+
 def normalize(train_arr, val_arr, test_arr):
-    """Fit scaler on train, apply to all splits. Works on (T, N, F) arrays."""
+    # Fit StandardScaler on train, apply to all splits
     T_tr, N, F = train_arr.shape
-    scaler = StandardScaler()
-    train_2d  = train_arr.reshape(-1, F)
-    scaler.fit(train_2d)
+    scaler      = StandardScaler()
+    scaler.fit(train_arr.reshape(-1, F))
+
     def _transform(arr):
         sh = arr.shape
         return scaler.transform(arr.reshape(-1, F)).reshape(sh)
+
     return _transform(train_arr), _transform(val_arr), _transform(test_arr), scaler
- 
+
+
+def normalize_targets(tr_tg, va_tg, te_tg):
+    """
+    Fit a StandardScaler on the log-transformed training targets (T, N, 2)
+    Returns normalised splits plus the scaler for inversion at eval time
+    """
+    T, N, C = tr_tg.shape        # C = 2  (dep, arr)
+    scaler   = StandardScaler()
+    scaler.fit(tr_tg.reshape(-1, C))
+
+    def _t(a):
+        sh = a.shape
+        return scaler.transform(a.reshape(-1, C)).reshape(sh)
+
+    return _t(tr_tg), _t(va_tg), _t(te_tg), scaler
+
+
+
+# -- Permutation importance ----------
+
+def _collect_all_batches(loader):
+    """Materialise the full DataLoader into a single tensor triple (x, ext, y)."""
+    xs, exts, ys = [], [], []
+    for x, ext, y in loader:
+        xs.append(x); exts.append(ext); ys.append(y)
+    return torch.cat(xs), torch.cat(exts), torch.cat(ys)
+
+
+def permute_station_feature(x_all, feature_idx):
+    # Globally permute one feature channel across all samples in the dataset.
+    x_perm = x_all.clone()
+    perm = torch.randperm(x_all.size(0))
+    x_perm[..., feature_idx] = x_all[perm, ..., feature_idx]
+    return x_perm
+
+
+def permute_external_feature(ext_all, feature_idx):
+    ext_perm = ext_all.clone()
+    perm = torch.randperm(ext_all.size(0))
+    ext_perm[..., feature_idx] = ext_all[perm, ..., feature_idx]
+    return ext_perm
+
+
+def compute_mae_seconds(model, x_all, ext_all, y_all, laplacian, tg_min,
+                        target_scaler=None, batch_size=256):
+    """
+    Run inference over the full dataset in mini-batches and return MAE in seconds.
+
+    """
+    model.eval()
+    all_pred, all_true = [], []
+
+    with torch.no_grad():
+        for start in range(0, x_all.size(0), batch_size):
+            xb   = x_all  [start:start + batch_size]
+            eb   = ext_all[start:start + batch_size]
+            yb   = y_all  [start:start + batch_size]
+            pred = model(xb, eb, laplacian, return_att=False).squeeze(2)  # (B, N, 2)
+            all_pred.append(pred.numpy())
+            all_true.append(yb.numpy())
+
+    preds = np.concatenate(all_pred)   # (total, N, 2)
+    trues = np.concatenate(all_true)
+
+    # Invert target z-score if targets were normalised after log-transform
+    if target_scaler is not None:
+        sh = preds.shape
+        preds = target_scaler.inverse_transform(preds.reshape(-1, 2)).reshape(sh)
+        trues = target_scaler.inverse_transform(trues.reshape(-1, 2)).reshape(sh)
+
+    pred_sec = np.expm1(preds) + tg_min
+    y_sec    = np.expm1(trues) + tg_min
+
+    return float(np.abs(pred_sec - y_sec).mean())
+
+
+def permutation_importance(
+    model,
+    loader,
+    laplacian,
+    station_feature_names,
+    external_feature_names,
+    tg_min,
+    target_scaler=None,
+    n_repeats=3,
+):
+    """
+    Global permutation importance with multi-repeat averaging.
+
+    Parameters
+    ----------
+    station_feature_names : the original F feature names (no lagged channels)
+    n_repeats             : number of independent permutations to average
+    target_scaler         : the scaler returned by normalize_targets()
+    """
+    model.eval()
+    laplacian = laplacian.cpu()
+
+    # Load the full split once
+    x_all, ext_all, y_all = _collect_all_batches(loader)
+
+    lagged_names   = ["lagged_dep", "lagged_arr"]
+    all_feat_names = list(station_feature_names) + lagged_names
+
+    baseline = compute_mae_seconds(
+        model, x_all, ext_all, y_all, laplacian, tg_min,
+        target_scaler=target_scaler
+    )
+    print(f"Baseline MAE (seconds): {baseline:.2f}\n")
+
+    importances = {}
+
+    # ---- station features + lagged channels ----
+    for i, name in enumerate(all_feat_names):
+        deltas = []
+        for _ in range(n_repeats):
+            x_perm = permute_station_feature(x_all, i)
+            deltas.append(
+                compute_mae_seconds(model, x_perm, ext_all, y_all, laplacian,
+                                    tg_min, target_scaler=target_scaler)
+                - baseline
+            )
+        delta = float(np.mean(deltas))
+        importances[name] = delta
+        print(f"  {name:45s}  delta={delta:+.2f} s")
+
+    # ---- external features ----
+    for i, name in enumerate(external_feature_names):
+        deltas = []
+        for _ in range(n_repeats):
+            ext_perm = permute_external_feature(ext_all, i)
+            deltas.append(
+                compute_mae_seconds(model, x_all, ext_perm, y_all, laplacian,
+                                    tg_min, target_scaler=target_scaler)
+                - baseline
+            )
+        delta = float(np.mean(deltas))
+        importances[name] = delta
+        print(f"  {name:45s}  delta={delta:+.2f} s")
+
+    return importances

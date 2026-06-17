@@ -6,7 +6,7 @@ def connect_weather_stations(weather_file = None, connectionfile=None, train_fil
     Merges based on nearest match of timestamp
     Returns: .parquet file with all data
     """
-    json_weather = pd.read_json("graph_models\weather_connection.json")
+    json_weather = pd.read_json("graph_models\weather_connection.json") # Load the file with information on how to connect
 
     neu_weather = prepare_neuchatel()
     neu_weather = neu_weather.sort_values("reference_timestamp")
@@ -24,7 +24,7 @@ def connect_weather_stations(weather_file = None, connectionfile=None, train_fil
     train_df = train_df.dropna()
     
 
-    #split datasets
+    # split datasets based on stations
     train_df_ne = train_df[train_df["OPERATING_POINT_ABBREVIATION"].isin(json_weather["Neuchatel"])]
     train_df_gre = train_df[train_df["OPERATING_POINT_ABBREVIATION"].isin(json_weather["Grenchen"])]
 
@@ -52,7 +52,7 @@ def connect_weather_stations(weather_file = None, connectionfile=None, train_fil
 
 def prepare_neuchatel():
 
-    # read in data
+    # Read in data
     df = pd.read_csv("data\weather/neu_pre_temp_wind_sun.csv", delimiter=";", header=0)
 
     cols_to_keep = ["station_abbr", "reference_timestamp", "date", "tre200s0", "fkl010z1", "fu3010z0", "rre150z0"]
@@ -60,26 +60,23 @@ def prepare_neuchatel():
     #filter date
     df['reference_timestamp'] = pd.to_datetime(df['reference_timestamp'], format="%d.%m.%Y %H:%M")
     df['date'] = df['reference_timestamp']
-    mask = (df['date'] >= '2025-01-01') & (df['date'] <= '2025-06-01')
+    mask = (df['date'] >= '2025-01-01') & (df['date'] <= '2025-12-31')
     filtered_df = df[mask]
 
     filtered_df = filtered_df[cols_to_keep]
     filtered_df["days"] = filtered_df['date'].dt.date
-    #filtered_df.head()
 
     # Merge with snow data
     neu_snow = pd.read_csv("data\weather/neu_snow.csv", delimiter=";", header=0)
 
-    cols_to_keep = ["station_abbr", "date", "reference_timestamp", "hto000d0"] # hto000d0 Schneehöhe um 6 UTC
+    cols_to_keep = ["station_abbr", "date", "reference_timestamp", "hto000d0"] # hto000d0 snow height at 6am UTC
 
     neu_snow['reference_timestamp'] = pd.to_datetime(neu_snow['reference_timestamp'], format="%d.%m.%Y %H:%M")
     neu_snow['date'] = neu_snow['reference_timestamp']
-    mask_snow = (neu_snow['date'] >= '2025-01-01') & (neu_snow['date'] <= '2025-06-01')
+    mask_snow = (neu_snow['date'] >= '2025-01-01') & (neu_snow['date'] <= '2025-12-31')
     filtered_df_snow = neu_snow[mask_snow]
     filtered_neu_snow = filtered_df_snow[cols_to_keep]
     filtered_neu_snow["days"] = filtered_neu_snow["date"].dt.date
-    #print(filtered_neu_snow.head())
-
 
     merged_neu = pd.merge(filtered_df, filtered_neu_snow[['days', 'hto000d0']], on='days', how='left') 
     return merged_neu
@@ -94,14 +91,10 @@ def prepare_grenchen():
     #filter date
     df['reference_timestamp'] = pd.to_datetime(df['reference_timestamp'], format="%d.%m.%Y %H:%M")
     df['date'] = df['reference_timestamp']
-    mask = (df['date'] >= '2025-01-01') & (df['date'] <= '2025-06-01')
+    mask = (df['date'] >= '2025-01-01') & (df['date'] <= '2025-12-31')
     filtered_df = df[mask]
 
     filtered_df = filtered_df[cols_to_keep]
-    #filtered_df.head()
-
-    
-
     return filtered_df
 
 

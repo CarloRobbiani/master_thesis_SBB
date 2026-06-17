@@ -3,10 +3,12 @@
 import pandas as pd
 #from graph_models.station_graph.training import StationMATGCNDataset
 from sklearn.preprocessing import LabelEncoder
+import os
 
 def convert_to_parquet(filepath: str):
     print("starting conversion...")
     df = pd.read_csv(filepath)
+    print(df["OPERATIONAL_DAY"].max())
     df.to_parquet("data/train_data.parquet")
     print("conversion finished!")
 
@@ -27,6 +29,8 @@ def filter_stations(station_list = "data\station_list.csv", file_path = "data/tr
     stations = station_df.iloc[1].tolist() # second row is list of station abbreviations
     train_df = train_df[train_df["OPERATING_POINT_ABBREVIATION"].isin(stations)]
 
+    print(train_df["OPERATIONAL_DAY"].max())
+
     train_df.to_parquet("data/train_data.parquet")
 
 def filter_parquet_file(filepath: str):
@@ -43,13 +47,10 @@ def filter_parquet_file(filepath: str):
 
         mask = pc.and_(
             pc.greater_equal(table['OPERATIONAL_DAY'], '2025-01-01'),
-            pc.less_equal(table['OPERATIONAL_DAY'], '2025-06-01')
+            pc.less_equal(table['OPERATIONAL_DAY'], '2025-12-31')
         )
 
         filtered = table.filter(mask)
-
-        if writer is None:
-            writer = pq.ParquetWriter("data/train_data_small.parquet", filtered.schema)
 
         writer.write_table(filtered)
 
@@ -71,7 +72,7 @@ def full_pipeline_preparing(csv_filepath):
 
 
 
-def preprocess_train(df, target_column="OPERATIONAL_PUNCTUAL"):
+def preprocess_train(df, target_column="DAILY_PLAN_OPERATIONAL_DELAY_SEC"):
     """
     Preprocess the dataframe for training of the XGBoost model
     """
@@ -166,8 +167,67 @@ def time_split(X, y, train_size=0.7, val_size=0.15):
     return X_train, X_val, X_test, y_train, y_val, y_test
 
 
+def augment_real_data(real_df: str):
+    """
+    Augments the real train dataset with simulated data
+
+    Arguments:
+    -real_df: path to the real rail data
+    """
+
+    real_df = pd.read_parquet(real_df)
+    available = sorted(real_df["OPERATIONAL_DAY"].unique())
+    num_days = len(available)
+
+    real_df["Simulated"] = False # Add to keep track of real and simulated data
+
+    list_of_files = os.listdir("simulator\data_scenarios")
+
+    time_shifts = {
+        "synthetic_blizzard.parquet" : -2 * 18,
+        "synthetic_mild_snow.parquet" : -18,
+        "synthetic_freezing_rain.parquet" : num_days,
+        "synthetic_heat_crosswind.parquet" : num_days + (2 * 18),
+        "synthetic_heavy_rain.parquet" : num_days + (1 * 18),
+    }
+
+    synthethic_datasets = []
+    for i, file in enumerate(list_of_files):
+        df = pd.read_parquet(f"simulator\data_scenarios/{file}")
+        df = df.drop(columns=["DAILY_PLAN_OPERATIONAL_DELAY_SEC"])
+        shifted = shift_timestamps(df, time_shifts[file])
+        shifted["Simulated"] = True
+        shifted = shifted.rename(columns={"SIMULATED_DELAY": "DAILY_PLAN_OPERATIONAL_DELAY_SEC"})
+        synthethic_datasets.append(shifted)
+    final = pd.concat([real_df] + synthethic_datasets, ignore_index=True)
+    return final
+
+    
+def shift_timestamps(df, offset_days):
+    """
+    Shifts the timestamps of the synthethic df to avoid duplicates
+    The synthethic data simulated 16 days
+    """
+
+    cols = [
+        "OPERATION_PLANNED_TIMESTAMP",
+        "OPERATION_ACTUAL_TIMESTAMP",
+        "SIMULATED_TIMESTAMP"
+    ]
+
+    for col in cols:
+        df[col] = pd.to_datetime(df[col])
+        df[col] += pd.Timedelta(days=offset_days)
+
+    return df
+
+
+
 if __name__ == "__main__":
 
     #filter_parquet_file("data/train_data.parquet")
     #filter_stations()
-    full_pipeline_preparing("data/train_data.csv")
+    #full_pipeline_preparing("data/train_data.csv")
+
+    long_df = augment_real_data("data/train_data_weather.parquet")
+    long_df.to_parquet("data/train_data_augmented.parquet")
