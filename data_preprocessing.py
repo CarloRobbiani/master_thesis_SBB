@@ -1,9 +1,11 @@
-# Expects all the preprocessed data in one file
-
 import pandas as pd
 #from graph_models.station_graph.training import StationMATGCNDataset
-from sklearn.preprocessing import LabelEncoder
 import os
+
+import pyarrow
+import pyarrow.parquet as pq
+import pyarrow.compute as pc
+import numpy as np
 
 def convert_to_parquet(filepath: str):
     print("starting conversion...")
@@ -12,10 +14,6 @@ def convert_to_parquet(filepath: str):
     df.to_parquet("data/train_data.parquet")
     print("conversion finished!")
 
-import pyarrow.parquet as pq
-import pyarrow.compute as pc
-import pyarrow
-import numpy as np
 
 def filter_stations(station_list = "data\station_list.csv", file_path = "data/train_data.parquet"):
     """
@@ -77,15 +75,11 @@ def preprocess_train(df, target_column="DAILY_PLAN_OPERATIONAL_DELAY_SEC"):
     Preprocess the dataframe for training of the XGBoost model
     """
 
-    # -----------------------
-    # 1. Drop useless columns
-    # -----------------------
+    # Drop columns
     if "Unnamed: 0" in df.columns:
         df = df.drop(columns=["Unnamed: 0"])
 
-    # -----------------------
-    # 2. Handle timestamps
-    # -----------------------
+    # Handle timestamps
     print("handling timestamps...")
     time_cols = ["OPERATION_PLANNED_TIMESTAMP", "OPERATION_ACTUAL_TIMESTAMP"]
 
@@ -102,29 +96,24 @@ def preprocess_train(df, target_column="DAILY_PLAN_OPERATIONAL_DELAY_SEC"):
     # Drop original timestamps
     df = df.drop(columns=time_cols)
 
-    # -----------------------
-    # 3. Boolean to int
-    # -----------------------
+    # Boolean to int
     print("converting boolean to int...")
     df["EVENT_SERVED"] = df["EVENT_SERVED"].astype(int)
 
-    # -----------------------
-    # 4. Categorical encoding
-    # -----------------------
+
+    # Categorical encoding
     print("categoircal encoding...")
     cat_cols = df.select_dtypes(include="object").columns
 
     for col in cat_cols:
         df[col] = df[col].astype("category").cat.codes
 
-    # -----------------------
-    # 5. Handle missing values
-    # -----------------------
+
+    # Handle missing values
     print("handling missing values...")
 
-    # -----------------------
-    # 6. Split X / y
-    # -----------------------
+
+    # Split X / y
     print("Splitting features...")
     FEATURE_COLS = [
         "EVENT_TYPE",
